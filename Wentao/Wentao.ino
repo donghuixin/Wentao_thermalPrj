@@ -57,20 +57,23 @@ public:
         if (!(status & 0x0008)) return; 
 
         if (transmit) {
-            bleuart.println("MLX:S"); // 矩阵开始标记
-            for (int r = 0; r < 24; r++) { // 24 行 [cite: 120]
-                String rowOutput = "";
-                for (int c = 0; c < 32; c++) { // 32 列 [cite: 120]
-                    uint16_t raw = readRegister(MLX90642_RAM_START + (r * 32 + c));
-                    float temp = (float)((int16_t)raw) / 50.0; // 转换公式 
-                    rowOutput += String(temp, 1);
-                    if (c < 31) rowOutput += ",";
+            for (int r = 0; r < 24; r++) { // 24 行
+                uint8_t rowData[64]; // 32 像素点 * 2 字节
+                bool ok = readBlock(MLX90642_RAM_START + r * 32, rowData, 32); 
+                
+                if (ok) {
+                    uint8_t packet[66];
+                    packet[0] = 0xFE; // Binary Chunk Magic Byte
+                    packet[1] = (uint8_t)r; // Row Index (0-23)
+                    memcpy(packet + 2, rowData, 64);
+                    bleuart.write(packet, 66); // 发送二进制行数据
                 }
-                bleuart.println(rowOutput); // 逐行发送以防缓冲区溢出
             }
-            bleuart.println("MLX:E"); // 矩阵结束标记
         }
-        // 注意：READY 标志在读取起始地址 0x342C 后会自动清除 [cite: 441, 943, 968]
+        // 注意：READY 标志在读取起始地址 0x342C 后会自动清除（或者手动读取一次起址清除）
+        if (!transmit) {
+            readRegister(MLX90642_RAM_START); // 未发送热成像时，也需读取一次清空READY
+        }
     }
 
 private:
@@ -86,6 +89,31 @@ private:
             data |= WireMLX.read();
         }
         return data;
+    }
+
+    bool readBlock(uint16_t startAddress, uint8_t* buffer, int words) {
+        // 由于绝大部分 Wire 库单次读取限制为 32 字节或 256 字节，分每 16 字 (32 字节) 一块读取确保最高兼容性
+        int offset = 0;
+        while (words > 0) {
+            int chunkWords = (words > 16) ? 16 : words;
+            int chunkBytes = chunkWords * 2;
+            
+            WireMLX.beginTransmission(MLX90642_I2C_ADDR);
+            WireMLX.write((startAddress + offset) >> 8);   
+            WireMLX.write((startAddress + offset) & 0xFF); 
+            if(WireMLX.endTransmission(false) != 0) return false; 
+            
+            int bytesRead = 0;
+            WireMLX.requestFrom((uint8_t)MLX90642_I2C_ADDR, (uint8_t)chunkBytes);
+            while (WireMLX.available() && bytesRead < chunkBytes) {
+                buffer[offset * 2 + bytesRead++] = WireMLX.read();
+            }
+            if (bytesRead != chunkBytes) return false;
+            
+            words -= chunkWords;
+            offset += chunkWords;
+        }
+        return true;
     }
 
     void writeRegister(uint16_t regAddress, uint16_t data) {

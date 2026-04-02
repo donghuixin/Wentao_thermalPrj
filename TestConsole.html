@@ -545,10 +545,41 @@
                 txChar = await service.getCharacteristic(UART_TX_CHAR_UUID);
                 const rxChar = await service.getCharacteristic(UART_RX_CHAR_UUID);
                 await rxChar.startNotifications();
+                
+                let bleTextBuffer = "";
+                
                 rxChar.addEventListener('characteristicvaluechanged', (e) => {
-                    const data = new TextDecoder().decode(e.target.value);
-                    logToTerminal(`RX: ${data.trim()}`, 'rx');
-                    parseRealData(data);
+                    const view = e.target.value; // DataView
+                    
+                    // Intercept Binary Packet (0xFE)
+                    if (view.byteLength === 66 && view.getUint8(0) === 0xFE) {
+                        const r = view.getUint8(1);
+                        if (r < 24) {
+                            for (let c = 0; c < 32; c++) {
+                                const msb = view.getUint8(2 + c * 2);
+                                const lsb = view.getUint8(2 + c * 2 + 1);
+                                let raw = (msb << 8) | lsb;
+                                if (raw & 0x8000) raw = raw - 0x10000; // Sign extend
+                                thermalData[r * 32 + c] = raw / 50.0;
+                            }
+                            if (r === 23) thermalUpdated = true;
+                        }
+                        return; // Don't process binary data as text
+                    }
+
+                    // Process text data with robust line splitting
+                    const data = new TextDecoder().decode(view);
+                    bleTextBuffer += data;
+                    let newlineIdx;
+                    while ((newlineIdx = bleTextBuffer.indexOf('\n')) !== -1) {
+                        const line = bleTextBuffer.substring(0, newlineIdx).trim();
+                        bleTextBuffer = bleTextBuffer.substring(newlineIdx + 1);
+                        if (line) {
+                            // Suppress massive logging for MIC lines if desired, but we keep it here to match previous behavior
+                            logToTerminal(`RX: ${line}`, 'rx');
+                            parseRealData(line);
+                        }
+                    }
                 });
 
                 logToTerminal("Connected successful.", 'success');
@@ -732,16 +763,20 @@
         /* =================== THERMAL CANVAS =================== */
         const thermalCanvas = document.getElementById('thermalCanvas');
         const ctx = thermalCanvas.getContext('2d');
-        const GRID_SIZE = 8;
+        const GRID_W = 32;
+        const GRID_H = 24;
         const cw = thermalCanvas.width;
         const ch = thermalCanvas.height;
-        const cellW = cw / GRID_SIZE;
-        const cellH = ch / GRID_SIZE;
+        const cellW = cw / GRID_W;
+        const cellH = ch / GRID_H;
 
-        function drawThermal(data8x8) {
-            for (let r = 0; r < GRID_SIZE; r++) {
-                for (let c = 0; c < GRID_SIZE; c++) {
-                    const val = data8x8[r * GRID_SIZE + c];
+        let thermalData = new Array(GRID_W * GRID_H).fill(25);
+        let thermalUpdated = false;
+
+        function drawThermal(dataArray) {
+            for (let r = 0; r < GRID_H; r++) {
+                for (let c = 0; c < GRID_W; c++) {
+                    const val = dataArray[r * GRID_W + c];
                     // 15C to 40C mapped to 0->1
                     let t = (val - 15) / (40 - 15);
                     t = Math.max(0, Math.min(1, t));
@@ -754,74 +789,59 @@
         }
 
         /* =================== REAL DATA PARSER =================== */
+        let imuUpdatePending = false;
+        let micUpdatePending = false;
         let lastChartUpdate = performance.now();
-        function parseRealData(str) {
-            const lines = str.trim().split('\n');
-            let imuUpdated = false;
-            let micUpdated = false;
 
-            for (let i = 0; i < lines.length; i++) {
-                let line = lines[i].trim();
-                if (line.startsWith('I:')) {
-                    const parts = line.substring(2).split(',');
-                    if (parts.length >= 6) {
-                        const ax = parseFloat(parts[0]);
-                        const ay = parseFloat(parts[1]);
-                        const az = parseFloat(parts[2]);
-                        const gx = parseFloat(parts[3]);
-                        const gy = parseFloat(parts[4]);
-                        const gz = parseFloat(parts[5]);
+        function parseRealData(line) {
+            if (line.startsWith('I:')) {
+                const parts = line.substring(2).split(',');
+                if (parts.length >= 6) {
+                    const ax = parseFloat(parts[0]);
+                    const ay = parseFloat(parts[1]);
+                    const az = parseFloat(parts[2]);
+                    const gx = parseFloat(parts[3]);
+                    const gy = parseFloat(parts[4]);
+                    const gz = parseFloat(parts[5]);
 
-                        imuData[0].push(ax); imuData[0].shift();
-                        imuData[1].push(ay); imuData[1].shift();
-                        imuData[2].push(az); imuData[2].shift();
-                        imuData[3].push(gx); imuData[3].shift();
-                        imuData[4].push(gy); imuData[4].shift();
-                        imuData[5].push(gz); imuData[5].shift();
+                    imuData[0].push(ax); imuData[0].shift();
+                    imuData[1].push(ay); imuData[1].shift();
+                    imuData[2].push(az); imuData[2].shift();
+                    imuData[3].push(gx); imuData[3].shift();
+                    imuData[4].push(gy); imuData[4].shift();
+                    imuData[5].push(gz); imuData[5].shift();
 
-                        // Mahony algorithm processes dps as rad/s
-                        filter.update(gx * Math.PI / 180, gy * Math.PI / 180, gz * Math.PI / 180, ax, ay, az);
-                        pcbGroup.quaternion.set(filter.q1, filter.q2, filter.q3, filter.q0);
-                        imuUpdated = true;
-                    }
-                } else if (line.includes('IMU:') && (line.includes('OK') || line.includes('ERR'))) {
-                    const label = document.getElementById('nameAcc');
-                    if (line.includes('ERR')) { label.style.color = 'var(--danger)'; label.innerText = 'IMU (ERR)'; }
-                    else { label.style.color = 'var(--text-main)'; label.innerText = 'IMU (6-Axis)'; }
-
-                    let accM = line.match(/Acc:\s*([^|]+)/);
-                    let gyrM = line.match(/Gyro:\s*([^\s|]+)/);
-                    if (accM && gyrM) document.getElementById('stRange').innerText = `±${accM[1].trim()}, ±${gyrM[1].trim()}`;
-                } else if (line.includes('MIC:') && (line.includes('OK') || line.includes('ERR'))) {
-                    const label = document.getElementById('nameMic');
-                    if (line.includes('ERR')) { label.style.color = 'var(--danger)'; label.innerText = 'Mic (ERR)'; }
-                    else { label.style.color = 'var(--text-main)'; label.innerText = 'Microphone'; }
-
-                    let rateM = line.match(/Rate:\s*([^\s]+)/);
-                    if (rateM) document.getElementById('stSr').innerText = `IMU:100Hz / Mic:${rateM[1]}`;
-                } else if (line.includes('MLX:') && (line.includes('OK') || line.includes('ERR'))) {
-                    const label = document.getElementById('nameIr');
-                    if (line.includes('ERR')) { label.style.color = 'var(--danger)'; label.innerText = 'Thermal IR (ERR)'; }
-                    else { label.style.color = 'var(--text-main)'; label.innerText = 'Thermal IR'; }
-                } else if (line.startsWith('MIC:')) {
-                    const parts = line.substring(4).split(',');
-                    if (parts.length >= 1 && !isNaN(parseFloat(parts[0]))) {
-                        micData.push(parseFloat(parts[0]));
-                        micData.shift();
-                        micUpdated = true;
-                    }
+                    // Mahony algorithm processes dps as rad/s
+                    filter.update(gx * Math.PI / 180, gy * Math.PI / 180, gz * Math.PI / 180, ax, ay, az);
+                    pcbGroup.quaternion.set(filter.q1, filter.q2, filter.q3, filter.q0);
+                    imuUpdatePending = true;
                 }
-            }
+            } else if (line.includes('IMU:') && (line.includes('OK') || line.includes('ERR'))) {
+                const label = document.getElementById('nameAcc');
+                if (line.includes('ERR')) { label.style.color = 'var(--danger)'; label.innerText = 'IMU (ERR)'; }
+                else { label.style.color = 'var(--text-main)'; label.innerText = 'IMU (6-Axis)'; }
 
-            const now = performance.now();
-            if (now - lastChartUpdate > 30) {
-                if (imuUpdated) {
-                    imuChart.setOption({ series: imuData.map(d => ({ data: d })) });
+                let accM = line.match(/Acc:\s*([^|]+)/);
+                let gyrM = line.match(/Gyro:\s*([^\s|]+)/);
+                if (accM && gyrM) document.getElementById('stRange').innerText = `±${accM[1].trim()}, ±${gyrM[1].trim()}`;
+            } else if (line.includes('MIC:') && (line.includes('OK') || line.includes('ERR'))) {
+                const label = document.getElementById('nameMic');
+                if (line.includes('ERR')) { label.style.color = 'var(--danger)'; label.innerText = 'Mic (ERR)'; }
+                else { label.style.color = 'var(--text-main)'; label.innerText = 'Microphone'; }
+
+                let rateM = line.match(/Rate:\s*([^\s]+)/);
+                if (rateM) document.getElementById('stSr').innerText = `IMU:100Hz / Mic:${rateM[1]}`;
+            } else if (line.includes('MLX:') && (line.includes('OK') || line.includes('ERR'))) {
+                const label = document.getElementById('nameIr');
+                if (line.includes('ERR')) { label.style.color = 'var(--danger)'; label.innerText = 'Thermal IR (ERR)'; }
+                else { label.style.color = 'var(--text-main)'; label.innerText = 'Thermal IR'; }
+            } else if (line.startsWith('MIC:')) {
+                const parts = line.substring(4).split(',');
+                if (parts.length >= 1 && !isNaN(parseFloat(parts[0]))) {
+                    micData.push(parseFloat(parts[0]));
+                    micData.shift();
+                    micUpdatePending = true;
                 }
-                if (micUpdated) {
-                    micChart.setOption({ series: [{ data: micData }] });
-                }
-                lastChartUpdate = now;
             }
         }
 
@@ -830,13 +850,31 @@
 
         function animate(time) {
             requestAnimationFrame(animate);
-            // Render 3D Scene continuously (PCB rotation will be updated when real data feeds Mahony filter)
+            // Render 3D Scene continuously
             renderer.render(scene, camera);
+
+            const now = performance.now();
+            if (now - lastChartUpdate > 30) {
+                if (imuUpdatePending) {
+                    imuChart.setOption({ series: imuData.map(d => ({ data: d })) });
+                    imuUpdatePending = false;
+                }
+                if (micUpdatePending) {
+                    micChart.setOption({ series: [{ data: micData }] });
+                    micUpdatePending = false;
+                }
+                if (thermalUpdated) {
+                    drawThermal(thermalData);
+                    thermalUpdated = false;
+                }
+                lastChartUpdate = now;
+            }
         }
         animate(0);
 
         // Provide an initial drawing for thermal
-        drawThermal(new Array(64).fill(22));
+        thermalData.fill(22);
+        drawThermal(thermalData);
 
     </script>
 
