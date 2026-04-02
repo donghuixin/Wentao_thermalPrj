@@ -543,73 +543,43 @@
                 const server = await bleDevice.gatt.connect();
                 const service = await server.getPrimaryService(UART_SERVICE_UUID);
                 txChar = await service.getCharacteristic(UART_TX_CHAR_UUID);
-                const rxChar = await service.getCharacteristic(UART_RX_CHAR_UUID);
-                await rxChar.startNotifications();
-                
-                let streamBuffer = new Uint8Array(0);
+                let bleTextBuffer = "";
                 
                 rxChar.addEventListener('characteristicvaluechanged', (e) => {
-                    // Append raw bytes to our stream buffer
-                    const incoming = new Uint8Array(e.target.value.buffer);
-                    const newBuffer = new Uint8Array(streamBuffer.length + incoming.length);
-                    newBuffer.set(streamBuffer);
-                    newBuffer.set(incoming, streamBuffer.length);
-                    streamBuffer = newBuffer;
-
-                    // Process stream buffer loop
-                    while (streamBuffer.length > 0) {
-                        if (streamBuffer[0] === 0xFE) {
-                            // Binary Chunk Packet
-                            if (streamBuffer.length >= 66) {
-                                const r = streamBuffer[1];
-                                if (r < 24) {
-                                    // Valid packet
-                                    const packet = streamBuffer.slice(0, 66);
-                                    streamBuffer = streamBuffer.slice(66);
-                                    
-                                    const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
-                                    for (let c = 0; c < 32; c++) {
-                                        const msb = view.getUint8(2 + c * 2);
-                                        const lsb = view.getUint8(2 + c * 2 + 1);
-                                        let raw = (msb << 8) | lsb;
-                                        if (raw & 0x8000) raw = raw - 0x10000; // Sign extend
-                                        thermalData[r * 32 + c] = raw / 50.0;
+                    const data = new TextDecoder().decode(e.target.value);
+                    bleTextBuffer += data;
+                    
+                    let newlineIdx;
+                    while ((newlineIdx = bleTextBuffer.indexOf('\n')) !== -1) {
+                        const line = bleTextBuffer.substring(0, newlineIdx).trim();
+                        bleTextBuffer = bleTextBuffer.substring(newlineIdx + 1);
+                        
+                        if (line) {
+                            if (line.startsWith('T')) {
+                                // format: T[rowHex]:[dataHex...128 chars]
+                                // Example: T0A:01FB...
+                                const parts = line.split(':');
+                                if (parts.length === 2 && parts[1].length === 128) {
+                                    const r = parseInt(parts[0].substring(1), 16);
+                                    if (r >= 0 && r < 24) {
+                                        const hexData = parts[1];
+                                        for (let c = 0; c < 32; c++) {
+                                            const msb = parseInt(hexData.substr(c * 4, 2), 16);
+                                            const lsb = parseInt(hexData.substr(c * 4 + 2, 2), 16);
+                                            let raw = (msb << 8) | lsb;
+                                            if (raw & 0x8000) raw = raw - 0x10000; // Sign extend
+                                            thermalData[r * 32 + c] = raw / 50.0;
+                                        }
+                                        if (r === 23) thermalUpdated = true;
                                     }
-                                    if (r === 23) thermalUpdated = true;
-                                } else {
-                                    // Frame error, drop magic byte and recover sync
-                                    streamBuffer = streamBuffer.slice(1);
                                 }
                             } else {
-                                // Wait for more fragments via BLE
-                                break;
-                            }
-                        } else {
-                            // Text Packet
-                            let newlineIdx = streamBuffer.indexOf(10); // '\n' = 10
-                            let feIdx = streamBuffer.indexOf(0xFE);
-                            
-                            if (feIdx !== -1 && (newlineIdx === -1 || feIdx < newlineIdx)) {
-                                // A binary packet arrived immediately after text, without a newline!
-                                const textBytes = streamBuffer.slice(0, feIdx);
-                                streamBuffer = streamBuffer.slice(feIdx);
-                                const line = new TextDecoder().decode(textBytes).trim();
-                                if (line) {
+                                // Default IMU / System logs
+                                // Suppress massive logging for MIC and IMU lines to prevent console stuttering
+                                if (!line.startsWith("MIC:") && !line.startsWith("I:")) {
                                     logToTerminal(`RX: ${line}`, 'rx');
-                                    parseRealData(line);
                                 }
-                            } else if (newlineIdx !== -1) {
-                                // Normal text line parsed
-                                const textBytes = streamBuffer.slice(0, newlineIdx);
-                                streamBuffer = streamBuffer.slice(newlineIdx + 1);
-                                const line = new TextDecoder().decode(textBytes).trim();
-                                if (line) {
-                                    logToTerminal(`RX: ${line}`, 'rx');
-                                    parseRealData(line);
-                                }
-                            } else {
-                                // Wait for more fragments
-                                break;
+                                parseRealData(line);
                             }
                         }
                     }

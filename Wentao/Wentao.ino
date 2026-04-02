@@ -23,9 +23,8 @@ short sampleBuffer[256];
 volatile int samplesRead;
 
 unsigned long lastImuTime = 0;
-char imuBatchBuffer[250]; 
-int imuBatchLen = 0;
-int imuSampleCount = 0;
+unsigned long lastMlxRowTime = 0;
+int currentMlxRow = 0;
 
 TwoWire WireMLX(NRF_TWIM1, NRF_TWIS1, SPIM1_SPIS1_TWIM1_TWIS1_SPI1_TWI1_IRQn, D4, D5);
 
@@ -37,6 +36,8 @@ TwoWire WireMLX(NRF_TWIM1, NRF_TWIS1, SPIM1_SPIS1_TWIM1_TWIS1_SPI1_TWI1_IRQn, D4
 
 class ThermalDataCollector {
 public:
+    unsigned long lastFrameTime = 0;
+
     bool begin() {
         WireMLX.begin();
         WireMLX.setClock(400000); // 建议 400kHz 以上速率 [cite: 1130]
@@ -44,36 +45,15 @@ public:
         uint16_t config = readRegister(MLX90642_CONFIG_REG);
         if (config == 0 || config == 0xFFFF) return false; 
 
-        // 设置刷新率为 8Hz (Bit 0-2 设为 100) [cite: 501, 521, 533]
+        // 设置刷新率为 8Hz (Bit 0-2 设为 100)
         config &= ~0x0007; 
         config |= 0x0004; 
         writeRegister(MLX90642_CONFIG_REG, config);
         return true;
     }
 
-    void update(bool transmit) {
-        uint16_t status = readRegister(MLX90642_STATUS_REG);
-        // 检查 READY 标志位 (Bit 3) [cite: 966, 968]
-        if (!(status & 0x0008)) return; 
-
-        if (transmit) {
-            for (int r = 0; r < 24; r++) { // 24 行
-                uint8_t rowData[64]; // 32 像素点 * 2 字节
-                bool ok = readBlock(MLX90642_RAM_START + r * 32, rowData, 32); 
-                
-                if (ok) {
-                    uint8_t packet[66];
-                    packet[0] = 0xFE; // Binary Chunk Magic Byte
-                    packet[1] = (uint8_t)r; // Row Index (0-23)
-                    memcpy(packet + 2, rowData, 64);
-                    bleuart.write(packet, 66); // 发送二进制行数据
-                }
-            }
-        }
-        // 注意：READY 标志在读取起始地址 0x342C 后会自动清除（或者手动读取一次起址清除）
-        if (!transmit) {
-            readRegister(MLX90642_RAM_START); // 未发送热成像时，也需读取一次清空READY
-        }
+    bool readRow(int r, uint8_t* rowData) {
+        return readBlock(MLX90642_RAM_START + r * 32, rowData, 32); 
     }
 
 private:
@@ -217,34 +197,48 @@ void loop() {
     }
 
     checkIncomingData();
-    
-    // 定时检查热成像数据，若 READY 则输出全矩阵
-    if (mlxOnline) {
-        thermalCollector.update(isRecording && recIr);
-    }
 
     if (isRecording) {
-        if (recAcc && imuOnline) {
-            if (millis() - lastImuTime >= 10) {
-                lastImuTime = millis();
-                float ax = myIMU.readFloatAccelX();
-                float ay = myIMU.readFloatAccelY();
-                float az = myIMU.readFloatAccelZ();
-                float gx = myIMU.readFloatGyroX();
-                float gy = myIMU.readFloatGyroY();
-                float gz = myIMU.readFloatGyroZ();
-                
-                imuBatchLen += sprintf(imuBatchBuffer + imuBatchLen, "I:%.1f,%.1f,%.1f,%.1f,%.1f,%.1f\n", ax, ay, az, gx, gy, gz);
-                imuSampleCount++;
+        unsigned long now = millis();
 
-                if (imuSampleCount >= 5) {
-                    bleuart.print(imuBatchBuffer);
-                    imuBatchLen = 0;
-                    imuSampleCount = 0;
+        // 1. Time Division Multiplexing - MLX Data (5ms per row, finishes 24 rows in 120ms -> covers 8Hz)
+        if (recIr && mlxOnline && (now - lastMlxRowTime >= 5)) {
+            lastMlxRowTime = now;
+            
+            uint8_t rowData[64];
+            if (thermalCollector.readRow(currentMlxRow, rowData)) {
+                // T + rowHex(2) + : + data(128) + \n = 133 chars.
+                char txBuf[140];
+                sprintf(txBuf, "T%02X:", currentMlxRow);
+                int idx = 4;
+                for (int i = 0; i < 64; i++) {
+                    sprintf(txBuf + idx, "%02X", rowData[i]);
+                    idx += 2;
                 }
+                txBuf[idx++] = '\n';
+                txBuf[idx] = '\0';
+                
+                bleuart.print(txBuf);
             }
+            
+            currentMlxRow++;
+            if (currentMlxRow >= 24) currentMlxRow = 0;
         }
 
+        // 2. Time Division Multiplexing - IMU Data (1 sample per 10ms -> 100Hz)
+        if (recAcc && imuOnline && (now - lastImuTime >= 10)) {
+            lastImuTime = now;
+            float ax = myIMU.readFloatAccelX();
+            float ay = myIMU.readFloatAccelY();
+            float az = myIMU.readFloatAccelZ();
+            float gx = myIMU.readFloatGyroX();
+            float gy = myIMU.readFloatGyroY();
+            float gz = myIMU.readFloatGyroZ();
+            
+            bleuart.printf("I:%.1f,%.1f,%.1f,%.1f,%.1f,%.1f\n", ax, ay, az, gx, gy, gz);
+        }
+
+        // 3. MIC Data
         if (recMic && micOnline && samplesRead > 0) {
             bleuart.printf("MIC:%d,%d\n", sampleBuffer[0], sampleBuffer[1]);
             samplesRead = 0; 
