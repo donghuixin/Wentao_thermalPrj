@@ -74,20 +74,42 @@ private:
     }
 
     bool readBlock(uint16_t startAddress, uint8_t* buffer, int words) {
-        int bytesToRead = words * 2;
-        
-        WireMLX.beginTransmission(MLX90642_I2C_ADDR);
-        WireMLX.write(startAddress >> 8);   
-        WireMLX.write(startAddress & 0xFF); 
-        if(WireMLX.endTransmission(false) != 0) return false; 
-        
-        int bytesRead = 0;
-        WireMLX.requestFrom((uint8_t)MLX90642_I2C_ADDR, (uint8_t)bytesToRead);
-        while (WireMLX.available() && bytesRead < bytesToRead) {
-            buffer[bytesRead++] = WireMLX.read();
+        int offset = 0;
+        int idx = 0;
+        while (words > 0) {
+            int chunkWords = (words > 16) ? 16 : words;
+            int chunkBytes = chunkWords * 2;
+            
+            WireMLX.beginTransmission(MLX90642_I2C_ADDR);
+            WireMLX.write((startAddress + offset) >> 8);   
+            WireMLX.write((startAddress + offset) & 0xFF); 
+            uint8_t err = WireMLX.endTransmission(false);
+            if (err != 0) {
+                bleuart.printf("SYS: endTrans err %d at %X\n", err, startAddress + offset);
+                return false; 
+            }
+            
+            int req = WireMLX.requestFrom((uint8_t)MLX90642_I2C_ADDR, (uint8_t)chunkBytes);
+            if (req != chunkBytes) {
+                bleuart.printf("SYS: reqFrom %d != %d\n", req, chunkBytes);
+                return false;
+            }
+
+            int bytesRead = 0;
+            while (WireMLX.available() && bytesRead < chunkBytes) {
+                buffer[idx++] = WireMLX.read();
+                bytesRead++;
+            }
+            
+            if (bytesRead != chunkBytes) {
+                bleuart.printf("SYS: available %d != %d\n", bytesRead, chunkBytes);
+                return false;
+            }
+            
+            words -= chunkWords;
+            offset += chunkWords;
         }
-        
-        return (bytesRead == bytesToRead);
+        return true;
     }
 
     void writeRegister(uint16_t regAddress, uint16_t data) {
