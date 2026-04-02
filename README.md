@@ -1,6 +1,6 @@
 # Wentao Thermal Sensor Data Collector
 
-A BLE-based multi-sensor data collection system built around the **Seeed XIAO nRF52840 (Sense)** board. The firmware collects data from an IMU, microphone, and thermal IR sensor, and streams it over Bluetooth to a browser-based dashboard for real-time visualization, analysis, and CSV export.
+A BLE-based multi-sensor data collection system built around the **Seeed XIAO nRF52840 (Sense) Plus** board. The firmware collects data from an IMU, microphone, and thermal IR sensor, and streams it over Bluetooth to a browser-based dashboard for real-time visualization, analysis, and CSV export.
 
 ## Project Structure
 
