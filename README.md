@@ -50,20 +50,23 @@ The firmware exposes the **Nordic UART Service (NUS)**:
 | `STOP_REC` / `S` / `s` | Stop recording |
 | `test` / `TEST` | Request system status report |
 
-### Data Output Format (Device → Client)
+### Data Output & Storage Format (Device → Client)
 
-| Prefix | Meaning | Format |
+All data is streamed via the RX Characteristic as ASCII text lines terminating in `\n`. Every line logged in the Web Dashboard is automatically prepended with a millisecond-precision timestamp `[HH:MM:SS.MMM]` when exported to CSV.
+
+| Prefix | Sensor | Storage Format Details & Physical Meaning |
 |---|---|---|
-| `I:` | IMU sample | `I:<ax>,<ay>,<az>,<gx>,<gy>,<gz>` (g / dps) |
-| `MIC:` | Microphone sample | `MIC:<sample0>,<sample1>` (16-bit PCM) |
-| `MLX:S` … `MLX:E` | Thermal matrix frame | 24 rows of 32 comma-separated temperature values (°C) |
-| `IMU: OK\|ERR` | Sensor status line | Part of system status report |
-| `MIC: OK\|ERR` | Sensor status line | Part of system status report |
-| `MLX: OK\|ERR` | Sensor status line | Part of system status report |
+| `I:` | IMU (LSM6DS3) | `I:<ax>,<ay>,<az>,<gx>,<gy>,<gz>`<br>• Accel: 3 float values (X, Y, Z axis) representing linear acceleration in **`g`** (gravity). Hardware range configured to **±2g**.<br>• Gyro: 3 float values (X, Y, Z axis) representing angular velocity in **`dps`** (degrees per second). Hardware range configured to **±2000 dps**.<br>• Output frequency: ~100Hz (1 sample every 10ms). |
+| `MIC:` | Audio PDM Mic | `MIC:<sample0>,<sample1>`<br>• Two consecutive raw 16-bit signed PCM audio samples generated continuously from the onboard PDM microphone.<br>• Built-in decimation targets a baseline sample pool of **16,000 Hz**. |
+| `TXX:` | Thermal IR (MLX) | `T<row_hex>:<128_char_hex_payload>`<br>• `row_hex`: A 2-character hex index `00` to `17` indicating the IR sensor row (0 to 23). <br>• `payload`: A 128-character hex string representing 64 physically sequential bytes read directly from the MLX90642 RAM (starting at `0x342C`).<br>**Data Meaning:** The payload represents 32 column pixels for the given row. Every 4 Hex characters encode a 16-bit Signed Integer. In the provided HTML dashboard, this raw 16-bit value is linearly approximated to Celsius (e.g., `temp_C = raw_signed_int / 50.0`). *Note: Genuine medical-grade temperatures require full EEPROM matrix calculations.* |
+| `SYS:` | General System | Text information containing error logs, I2C collision traces, and `STARTED/STOPPED` events. |
 
-### IMU Batching
+### Architectural Features
 
-To maximize BLE throughput, IMU samples are batched — 5 samples are collected at 100 Hz (every 10 ms) and sent as a single BLE packet.
+1. **Wait-free TDM (Time-Division Multiplexing) Bluetooth Streaming**:
+   By spacing IR row queries every 5ms and IMU polls every 10ms, the system "drip-feeds" data into the nRF52 BLE TX buffer without triggering fatal `GATTC_OUT_OF_RESOURCES` errors.
+2. **Unified Hardware I2C (TWIM0)**:
+   A single, standardized `Wire` (D4 & D5) object controls both internal and external sensors to completely avert Nordic DMA multiplexer conflicts during concurrent reads.
 
 ## Web Dashboard (`TestConsole.html`)
 
