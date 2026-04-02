@@ -136,8 +136,8 @@ void prph_connect_callback(uint16_t conn_handle) {
 
 void sendSystemStatus() {
     bleuart.println("\n=== System Status ===");
-    bleuart.printf("IMU: %s | Addr: 0x6A\n", imuOnline ? "OK" : "ERR");
-    bleuart.printf("MIC: %s | Internal\n", micOnline ? "OK" : "ERR");
+    bleuart.printf("IMU: %s | Addr: 0x6A | Acc: 2g | Gyro: 2000dps\n", imuOnline ? "OK" : "ERR");
+    bleuart.printf("MIC: %s | Internal | Rate: 16kHz\n", micOnline ? "OK" : "ERR");
     bleuart.printf("MLX: %s | Addr: 0x66 | 8Hz\n", mlxOnline ? "OK" : "ERR");
     bleuart.println("=====================");
 }

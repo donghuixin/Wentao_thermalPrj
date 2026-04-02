@@ -1,4 +1,4 @@
-<!-- Last Update Time: 2026-04-03 00:57 -->
+<!-- Last Update Time: 2026-04-03 01:21 -->
 <!DOCTYPE html>
 <html lang="zh-CN">
 
@@ -560,6 +560,7 @@
                         
                         if (line) {
                             if (line.startsWith('T')) {
+                                logToTerminal(`RX: ${line}`, 'rx'); // Display Thermal rows in UI 
                                 // format: T[rowHex]:[dataHex...128 chars]
                                 // Example: T0A:01FB...
                                 const parts = line.split(':');
@@ -578,11 +579,8 @@
                                     }
                                 }
                             } else {
-                                // Default IMU / System logs
-                                // Suppress massive logging for MIC and IMU lines to prevent console stuttering
-                                if (!line.startsWith("MIC:") && !line.startsWith("I:")) {
-                                    logToTerminal(`RX: ${line}`, 'rx');
-                                }
+                                // Show all logs (no suppression) to satisfy User's export and raw view needs
+                                logToTerminal(`RX: ${line}`, 'rx');
                                 parseRealData(line);
                             }
                         }
