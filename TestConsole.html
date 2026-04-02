@@ -543,6 +543,9 @@
                 const server = await bleDevice.gatt.connect();
                 const service = await server.getPrimaryService(UART_SERVICE_UUID);
                 txChar = await service.getCharacteristic(UART_TX_CHAR_UUID);
+                const rxChar = await service.getCharacteristic(UART_RX_CHAR_UUID);
+                await rxChar.startNotifications();
+
                 let bleTextBuffer = "";
                 
                 rxChar.addEventListener('characteristicvaluechanged', (e) => {

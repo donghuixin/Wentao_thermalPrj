@@ -124,6 +124,22 @@ Click **💾 Save CSV** at any time to download all logged data as a CSV file.
 - **Hardware**: Seeed XIAO nRF52840 Sense + MLX90642 thermal sensor module
 - **Arduino BSP**: Adafruit nRF52 Arduino Core
 
+## System Architecture Analysis & XIAO nRF52840 Guidelines
+
+Based on the [BLE-develop-skills-nRF_Connect](https://github.com/donghuixin/BLE-develop-skills-nRF_Connect) knowledge base and hardware deep dives, the current architecture was analyzed for enterprise-level RTOS scalability:
+
+1. **BLE Protocol (Unified UART vs Custom GATT)**:
+   Currently, the project utilizes firmware-level Time Division Multiplexing (TDM) to multiplex HEX MLX streams and String IMU streams over a single BLE UART Characteristic. While efficient for prototyping, a professional Zephyr (NCS) stack mandates strictly defining distinct GATT characteristic structured payloads for maximum decoupling.
+
+2. **Deep Sleep & Peripherals**:
+   The XIAO nRF52840 Sense has critical hardware paradigms for low power:
+   - **Battery Monitoring**: `P0.14` acts as a logic switch to the resistor divider to prevent continuous leakage.
+   - **QSPI Flash**: The 2MB external Flash draws 50-100µA at idle unless a dedicated `0xB9` SPI Deep Power-Down command is sent.
+   - **Superloop vs RTOS**: `loop()` handles polling gracefully but spins the CPU. Fully utilizing Zephyr's `k_work` or hardware GPIO interrupts (e.g., IMU `INT1`) allows the CPU to enter System ON idle sleep.
+
+3. **Recommended Migration**:
+   Moving forward into production or integration with Mesh/Matter networks warrants migrating this project from the Arduino Adafruit BSP to the **nRF Connect SDK (NCS)**. Doing so shifts hardware definitions explicitly out of C structs and into Devicetree (`.overlay`) files, preventing bricking and maintaining rigorous hardware truth.
+
 ## License
 
 This project is provided as-is for educational and prototyping purposes.

@@ -40,7 +40,8 @@ public:
 
     bool begin() {
         WireMLX.begin();
-        WireMLX.setClock(400000); // 建议 400kHz 以上速率 [cite: 1130]
+        // 降低时钟速率到标准的 100kHz。实验连线时 400kHz 极易因为分布电容导致通讯截断报错！
+        WireMLX.setClock(100000); 
         
         uint16_t config = readRegister(MLX90642_CONFIG_REG);
         if (config == 0 || config == 0xFFFF) return false; 
@@ -72,28 +73,20 @@ private:
     }
 
     bool readBlock(uint16_t startAddress, uint8_t* buffer, int words) {
-        // 由于绝大部分 Wire 库单次读取限制为 32 字节或 256 字节，分每 16 字 (32 字节) 一块读取确保最高兼容性
-        int offset = 0;
-        while (words > 0) {
-            int chunkWords = (words > 16) ? 16 : words;
-            int chunkBytes = chunkWords * 2;
-            
-            WireMLX.beginTransmission(MLX90642_I2C_ADDR);
-            WireMLX.write((startAddress + offset) >> 8);   
-            WireMLX.write((startAddress + offset) & 0xFF); 
-            if(WireMLX.endTransmission(false) != 0) return false; 
-            
-            int bytesRead = 0;
-            WireMLX.requestFrom((uint8_t)MLX90642_I2C_ADDR, (uint8_t)chunkBytes);
-            while (WireMLX.available() && bytesRead < chunkBytes) {
-                buffer[offset * 2 + bytesRead++] = WireMLX.read();
-            }
-            if (bytesRead != chunkBytes) return false;
-            
-            words -= chunkWords;
-            offset += chunkWords;
+        int bytesToRead = words * 2;
+        
+        WireMLX.beginTransmission(MLX90642_I2C_ADDR);
+        WireMLX.write(startAddress >> 8);   
+        WireMLX.write(startAddress & 0xFF); 
+        if(WireMLX.endTransmission(false) != 0) return false; 
+        
+        int bytesRead = 0;
+        WireMLX.requestFrom((uint8_t)MLX90642_I2C_ADDR, (uint8_t)bytesToRead);
+        while (WireMLX.available() && bytesRead < bytesToRead) {
+            buffer[bytesRead++] = WireMLX.read();
         }
-        return true;
+        
+        return (bytesRead == bytesToRead);
     }
 
     void writeRegister(uint16_t regAddress, uint16_t data) {
@@ -134,11 +127,9 @@ void processCommand(String cmd) {
             recAcc = (cmd.charAt(12) == '1');
             recIr  = (cmd.charAt(14) == '1');
             isRecording = true;
-            imuBatchLen = 0; 
-            imuSampleCount = 0;
             bleuart.println("SYS: Recording STARTED.");
         }
-    } 
+    }
     else if (cmd == "STOP_REC" || cmd == "S" || cmd == "s") {
         isRecording = false;
         bleuart.println("SYS: Recording STOPPED.");
@@ -219,6 +210,12 @@ void loop() {
                 txBuf[idx] = '\0';
                 
                 bleuart.print(txBuf);
+            } else {
+                static unsigned long lastMlxErrTime = 0;
+                if (now - lastMlxErrTime > 1500) {
+                    bleuart.printf("SYS: [ERR] MLX I2C read ROW %d failed.\n", currentMlxRow);
+                    lastMlxErrTime = now;
+                }
             }
             
             currentMlxRow++;
