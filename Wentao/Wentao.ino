@@ -1,4 +1,4 @@
-// Last Update Time: 2026-04-03 00:57
+// Last Update Time: 2026-04-03 01:12
 #include <LSM6DS3.h>
 #include <Wire.h>
 #include <bluefruit.h>
@@ -27,7 +27,7 @@ unsigned long lastImuTime = 0;
 unsigned long lastMlxRowTime = 0;
 int currentMlxRow = 0;
 
-TwoWire WireMLX(NRF_TWIM1, NRF_TWIS1, SPIM1_SPIS1_TWIM1_TWIS1_SPI1_TWI1_IRQn, D4, D5);
+// Removed duplicate TwoWire instance. Both IMU and MLX share the standard Wire (D4/D5) bus!
 
 // ===================== MLX90642 正确寄存器定义 =====================
 #define MLX90642_I2C_ADDR    0x66   // [cite: 108, 188]
@@ -40,9 +40,9 @@ public:
     unsigned long lastFrameTime = 0;
 
     bool begin() {
-        WireMLX.begin();
+        Wire.begin();
         // 降低时钟速率到标准的 100kHz。实验连线时 400kHz 极易因为分布电容导致通讯截断报错！
-        WireMLX.setClock(100000); 
+        Wire.setClock(100000); 
         
         uint16_t config = readRegister(MLX90642_CONFIG_REG);
         if (config == 0 || config == 0xFFFF) return false; 
@@ -60,15 +60,15 @@ public:
 
 private:
     uint16_t readRegister(uint16_t regAddress) {
-        WireMLX.beginTransmission(MLX90642_I2C_ADDR);
-        WireMLX.write(regAddress >> 8);   
-        WireMLX.write(regAddress & 0xFF); 
-        if(WireMLX.endTransmission(false) != 0) return 0; 
-        WireMLX.requestFrom((uint8_t)MLX90642_I2C_ADDR, (uint8_t)2);
+        Wire.beginTransmission(MLX90642_I2C_ADDR);
+        Wire.write(regAddress >> 8);   
+        Wire.write(regAddress & 0xFF); 
+        if(Wire.endTransmission(false) != 0) return 0; 
+        Wire.requestFrom((uint8_t)MLX90642_I2C_ADDR, (uint8_t)2);
         uint16_t data = 0;
-        if (WireMLX.available() == 2) {
-            data = WireMLX.read() << 8;
-            data |= WireMLX.read();
+        if (Wire.available() == 2) {
+            data = Wire.read() << 8;
+            data |= Wire.read();
         }
         return data;
     }
@@ -80,24 +80,24 @@ private:
             int chunkWords = (words > 16) ? 16 : words;
             int chunkBytes = chunkWords * 2;
             
-            WireMLX.beginTransmission(MLX90642_I2C_ADDR);
-            WireMLX.write((startAddress + offset) >> 8);   
-            WireMLX.write((startAddress + offset) & 0xFF); 
-            uint8_t err = WireMLX.endTransmission(false);
+            Wire.beginTransmission(MLX90642_I2C_ADDR);
+            Wire.write((startAddress + offset) >> 8);   
+            Wire.write((startAddress + offset) & 0xFF); 
+            uint8_t err = Wire.endTransmission(false);
             if (err != 0) {
                 bleuart.printf("SYS: endTrans err %d at %X\n", err, startAddress + offset);
                 return false; 
             }
             
-            int req = WireMLX.requestFrom((uint8_t)MLX90642_I2C_ADDR, (uint8_t)chunkBytes);
+            int req = Wire.requestFrom((uint8_t)MLX90642_I2C_ADDR, (uint8_t)chunkBytes);
             if (req != chunkBytes) {
                 bleuart.printf("SYS: reqFrom %d != %d\n", req, chunkBytes);
                 return false;
             }
 
             int bytesRead = 0;
-            while (WireMLX.available() && bytesRead < chunkBytes) {
-                buffer[idx++] = WireMLX.read();
+            while (Wire.available() && bytesRead < chunkBytes) {
+                buffer[idx++] = Wire.read();
                 bytesRead++;
             }
             
@@ -113,12 +113,12 @@ private:
     }
 
     void writeRegister(uint16_t regAddress, uint16_t data) {
-        WireMLX.beginTransmission(MLX90642_I2C_ADDR);
-        WireMLX.write(regAddress >> 8);   
-        WireMLX.write(regAddress & 0xFF); 
-        WireMLX.write(data >> 8);         
-        WireMLX.write(data & 0xFF);       
-        WireMLX.endTransmission();
+        Wire.beginTransmission(MLX90642_I2C_ADDR);
+        Wire.write(regAddress >> 8);   
+        Wire.write(regAddress & 0xFF); 
+        Wire.write(data >> 8);         
+        Wire.write(data & 0xFF);       
+        Wire.endTransmission();
     }
 };
 
