@@ -1,0 +1,10 @@
+[manifest]
+path = open_earable_2_main
+file = west.yml
+
+[zephyr]
+base = zephyr
+
+[build]
+board_root = E:/New_FirmIMU
+

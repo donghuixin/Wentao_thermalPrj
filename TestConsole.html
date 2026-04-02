@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pro Max Sensor Dashboard</title>
+
+    <!-- ECharts -->
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js"></script>
+    <!-- Three.js -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --panel-bg: rgba(22, 27, 43, 0.7);
+            --panel-border: rgba(255, 255, 255, 0.08);
+            --text-main: #e2e8f0;
+            --text-muted: #94a3b8;
+            --accent: #3b82f6;
+            --accent-hover: #60a5fa;
+            --danger: #ef4444;
+            --success: #10b981;
+            --border-radius: 16px;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: radial-gradient(circle at 50% -20%, #1a233a, var(--bg-color));
+            color: var(--text-main);
+            margin: 0;
+            padding: 20px;
+            height: 100vh;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            overflow: hidden;
+        }
+
+        h2,
+        h3,
+        h4 {
+            margin: 0;
+            font-weight: 600;
+        }
+
+        .glass-panel {
+            background: var(--panel-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--panel-border);
+            border-radius: var(--border-radius);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .layout-main {
+            display: flex;
+            gap: 20px;
+            flex: 1;
+            min-height: 0;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 270px;
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding-right: 5px;
+        }
+
+        .sidebar-section {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 12px 16px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #3b82f6, #2563eb);
+        }
+
+        .btn-primary:hover {
+            box-shadow: 0 0 15px rgba(59, 130, 246, 0.5);
+            transform: translateY(-1px);
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, #10b981, #059669);
+        }
+
+        .btn-success:hover {
+            box-shadow: 0 0 15px rgba(16, 185, 129, 0.5);
+            transform: translateY(-1px);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #ef4444, #dc2626);
+        }
+
+        .btn-danger:hover {
+            box-shadow: 0 0 15px rgba(239, 68, 68, 0.5);
+            transform: translateY(-1px);
+        }
+
+        .btn:disabled {
+            background: #334155;
+            color: #94a3b8;
+            cursor: not-allowed;
+            box-shadow: none;
+            transform: none;
+        }
+
+        /* Switches */
+        .switch-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 8px;
+        }
+
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 44px;
+            height: 24px;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #475569;
+            transition: .4s;
+            border-radius: 24px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked+.slider {
+            background-color: var(--success);
+        }
+
+        input:checked+.slider:before {
+            transform: translateX(20px);
+        }
+
+        /* Stats Display */
+        .stat-box {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            color: var(--text-muted);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            padding-bottom: 6px;
+        }
+
+        .stat-val {
+            color: var(--text-main);
+            font-weight: 500;
+            font-family: monospace;
+        }
+
+        /* Dashboard Grid */
+        .dashboard {
+            flex: 1;
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr;
+            grid-template-rows: 1fr 1fr;
+            gap: 20px;
+            min-height: 0;
+        }
+
+        .chart-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .chart-container .title {
+            font-size: 14px;
+            color: var(--text-muted);
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 600;
+        }
+
+        .chart-body {
+            flex: 1;
+            min-height: 0;
+            position: relative;
+        }
+
+        .imu-cell {
+            grid-column: 1 / 2;
+            grid-row: 1 / 2;
+        }
+
+        .mic-cell {
+            grid-column: 1 / 2;
+            grid-row: 2 / 3;
+        }
+
+        .thermal-cell {
+            grid-column: 2 / 3;
+            grid-row: 1 / 3;
+        }
+
+        .posture-cell {
+            grid-column: 3 / 4;
+            grid-row: 1 / 3;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        /* Bottom Terminal */
+        .terminal-panel {
+            height: 180px;
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .terminal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        #terminal {
+            flex: 1;
+            background: rgba(0, 0, 0, 0.4);
+            border-radius: 8px;
+            padding: 12px;
+            font-family: 'Fira Code', 'Courier New', Courier, monospace;
+            font-size: 13px;
+            overflow-y: auto;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            display: block;
+            /* Native block flow for robust vertical scrolling */
+        }
+
+        .log-item {
+            display: inline-block;
+            background: rgba(255, 255, 255, 0.05);
+            padding: 4px 8px;
+            margin: 0 8px 8px 0;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            /* allow wrapping if string too long */
+            word-break: break-all;
+        }
+
+        .log-rx {
+            color: #6ee7b7;
+        }
+
+        .log-tx {
+            color: #fcd34d;
+        }
+
+        .log-info {
+            color: #93c5fd;
+        }
+
+        .log-error {
+            color: #f87171;
+            border-left: 2px solid #ef4444;
+        }
+
+        /* Scrollbar styles */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #475569;
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #64748b;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="layout-main">
+        <!-- Sidebar -->
+        <div class="glass-panel sidebar">
+            <h2
+                style="color: var(--text-main); font-size: 18px; display: flex; align-items: center; gap: 8px; line-height: 1.2;">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+                </svg>
+                Wentao Data Collector Console
+            </h2>
+
+            <button id="btnConnect" class="btn btn-primary">🔗 Connect Bluetooth</button>
+
+            <div class="sidebar-section">
+                <h4 style="color: var(--text-muted); font-size: 12px; text-transform: uppercase;">Sensors</h4>
+                <div class="switch-row">
+                    <span id="nameMic">Microphone</span>
+                    <label class="switch"><input type="checkbox" id="swMic" checked><span class="slider"></span></label>
+                </div>
+                <div class="switch-row">
+                    <span id="nameAcc">IMU (6-Axis)</span>
+                    <label class="switch"><input type="checkbox" id="swAcc" checked><span class="slider"></span></label>
+                </div>
+                <div class="switch-row">
+                    <span id="nameIr">Thermal IR</span>
+                    <label class="switch"><input type="checkbox" id="swIr" checked><span class="slider"></span></label>
+                </div>
+            </div>
+
+            <div class="sidebar-section">
+                <h4 style="color: var(--text-muted); font-size: 12px; text-transform: uppercase;">Device Info</h4>
+                <div class="stat-box"><span>Status</span><span class="stat-val" id="stConn">Disconnected</span></div>
+                <div class="stat-box"><span>Sample Rate</span><span class="stat-val" id="stSr">Waiting...</span></div>
+                <div class="stat-box"><span>IMU Range</span><span class="stat-val" id="stRange">Waiting...</span></div>
+                <div class="stat-box"><span>Data Format</span><span class="stat-val" id="stFormat">Binary/HEX</span>
+                </div>
+            </div>
+
+            <div style="flex: 1;"></div>
+
+            <div class="sidebar-section" style="gap: 8px;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                    <button id="btnTest" class="btn btn-primary" style="padding: 10px 5px;" disabled>🔍 Test</button>
+                    <button id="btnStopTx" class="btn btn-danger" style="padding: 10px 5px;" disabled>⏸ Pause
+                        Tx</button>
+                    <button id="btnStart" class="btn btn-success" style="padding: 10px 5px;" disabled>▶ Start
+                        Log</button>
+                    <button id="btnStop" class="btn btn-danger" style="padding: 10px 5px;" disabled>⏹ Stop Log</button>
+                </div>
+                <button id="btnSaveCSV" class="btn btn-primary"
+                    style="background: linear-gradient(135deg, #8b5cf6, #7c3aed); margin-top: 5px;">💾 Save CSV</button>
+            </div>
+        </div>
+
+        <!-- Dashboard -->
+        <div class="dashboard">
+            <!-- Row 1: Left 50% -> Top 50% area is 2 columns wide out of 4 -> actually 50% width -->
+            <div class="glass-panel chart-container imu-cell">
+                <div class="title">IMU 6-Axis Realtime</div>
+                <div id="imuChart" class="chart-body"></div>
+            </div>
+
+            <!-- Row 2: Left 50% -->
+            <div class="glass-panel chart-container mic-cell">
+                <div class="title">Microphone Waveform</div>
+                <div id="micChart" class="chart-body"></div>
+            </div>
+
+            <!-- Right 50%: Split into two vertical columns spanning both rows -->
+            <div class="glass-panel chart-container thermal-cell">
+                <div class="title">Thermal Heatmap (8x8)</div>
+                <div class="chart-body"
+                    style="display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.2); border-radius: 8px;">
+                    <canvas id="thermalCanvas" width="400" height="400"></canvas>
+                </div>
+            </div>
+
+            <div class="glass-panel chart-container posture-cell">
+                <div class="title">3D Board Posture</div>
+                <div id="scene-container" class="chart-body" style="background: rgba(0,0,0,0.2); border-radius: 8px;">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bottom Command Line -->
+    <div class="glass-panel terminal-panel">
+        <div class="terminal-header">
+            <span style="font-weight: 600; font-size: 14px; letter-spacing: 1px;">Live Data Stream</span>
+            <button class="btn" style="background: rgba(255,255,255,0.1); padding: 4px 10px; font-size: 12px;"
+                onclick="document.getElementById('terminal').innerHTML = '';">Clear</button>
+        </div>
+        <div id="terminal"></div>
+    </div>
+
+    <script>
+        /* =================== MAHONY AHRS FILTER =================== */
+        class MahonyAHRS {
+            constructor(sampleFreq = 100, kp = 0.5, ki = 0.0) {
+                this.sampleFreq = sampleFreq;
+                this.kp = kp; this.ki = ki;
+                this.q0 = 1; this.q1 = 0; this.q2 = 0; this.q3 = 0;
+                this.eIntx = 0; this.eInty = 0; this.eIntz = 0;
+            }
+            update(gx, gy, gz, ax, ay, az) {
+                let recipNorm;
+                let qa, qb, qc;
+                if (ax !== 0 || ay !== 0 || az !== 0) {
+                    recipNorm = 1.0 / Math.sqrt(ax * ax + ay * ay + az * az);
+                    ax *= recipNorm; ay *= recipNorm; az *= recipNorm;
+
+                    let halfvx = this.q1 * this.q3 - this.q0 * this.q2;
+                    let halfvy = this.q0 * this.q1 + this.q2 * this.q3;
+                    let halfvz = this.q0 * this.q0 - 0.5 + this.q3 * this.q3;
+
+                    let halfex = (ay * halfvz - az * halfvy);
+                    let halfey = (az * halfvx - ax * halfvz);
+                    let halfez = (ax * halfvy - ay * halfvx);
+
+                    if (this.ki > 0) {
+                        this.eIntx += this.ki * halfex * (1.0 / this.sampleFreq);
+                        this.eInty += this.ki * halfey * (1.0 / this.sampleFreq);
+                        this.eIntz += this.ki * halfez * (1.0 / this.sampleFreq);
+                        gx += this.eIntx; gy += this.eInty; gz += this.eIntz;
+                    }
+                    gx += this.kp * halfex; gy += this.kp * halfey; gz += this.kp * halfez;
+                }
+                gx *= (0.5 * (1.0 / this.sampleFreq));
+                gy *= (0.5 * (1.0 / this.sampleFreq));
+                gz *= (0.5 * (1.0 / this.sampleFreq));
+                qa = this.q0; qb = this.q1; qc = this.q2;
+                this.q0 += (-qb * gx - qc * gy - this.q3 * gz);
+                this.q1 += (qa * gx + qc * gz - this.q3 * gy);
+                this.q2 += (qa * gy - qb * gz + this.q3 * gx);
+                this.q3 += (qa * gz + qb * gy - qc * gx);
+
+                recipNorm = 1.0 / Math.sqrt(this.q0 * this.q0 + this.q1 * this.q1 + this.q2 * this.q2 + this.q3 * this.q3);
+                this.q0 *= recipNorm; this.q1 *= recipNorm; this.q2 *= recipNorm; this.q3 *= recipNorm;
+            }
+        }
+        const filter = new MahonyAHRS(100, 1.0, 0.0);
+
+        /* =================== TERMINAL & BLUETOOTH =================== */
+        const terminal = document.getElementById('terminal');
+        let maxLogs = 2000;
+        window.rawDataLog = []; // added for CSV storage
+
+        function logToTerminal(message, type = 'info') {
+            const div = document.createElement('div');
+            div.className = `log-item log-${type}`;
+
+            const now = new Date();
+            const t = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}.${now.getMilliseconds().toString().padStart(3, '0')}`;
+
+            div.innerText = `[${t}] ${message}`;
+            terminal.appendChild(div);
+            window.rawDataLog.push(`[${t}],${type},${message}`);
+
+            if (terminal.childElementCount > maxLogs) {
+                terminal.removeChild(terminal.firstChild);
+            }
+            terminal.scrollTop = terminal.scrollHeight;
+        }
+
+        const UART_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+        const UART_TX_CHAR_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
+        const UART_RX_CHAR_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
+
+        let bleDevice = null, txChar = null;
+        let isRecording = false;
+
+        document.getElementById('btnConnect').addEventListener('click', async () => {
+            if (bleDevice && bleDevice.gatt.connected) {
+                bleDevice.gatt.disconnect();
+                return;
+            }
+            try {
+                logToTerminal("Requesting Bluetooth Device...", 'info');
+                bleDevice = await navigator.bluetooth.requestDevice({
+                    filters: [{ services: [UART_SERVICE_UUID] }],
+                    optionalServices: [UART_SERVICE_UUID]
+                });
+                bleDevice.addEventListener('gattserverdisconnected', () => {
+                    logToTerminal("Bluetooth disconnected.", 'error');
+                    document.getElementById('btnConnect').innerText = "🔗 Connect Bluetooth";
+                    document.getElementById('btnConnect').className = "btn btn-primary";
+                    document.getElementById('stConn').innerText = "Disconnected";
+                    document.getElementById('stConn').style.color = "var(--text-muted)";
+                    document.getElementById('btnStart').disabled = true;
+                    document.getElementById('btnStop').disabled = true;
+                    document.getElementById('btnTest').disabled = true;
+                    document.getElementById('btnStopTx').disabled = true;
+                    bleDevice = null;
+                });
+                const server = await bleDevice.gatt.connect();
+                const service = await server.getPrimaryService(UART_SERVICE_UUID);
+                txChar = await service.getCharacteristic(UART_TX_CHAR_UUID);
+                const rxChar = await service.getCharacteristic(UART_RX_CHAR_UUID);
+                await rxChar.startNotifications();
+                rxChar.addEventListener('characteristicvaluechanged', (e) => {
+                    const data = new TextDecoder().decode(e.target.value);
+                    logToTerminal(`RX: ${data.trim()}`, 'rx');
+                    parseRealData(data);
+                });
+
+                logToTerminal("Connected successful.", 'success');
+                document.getElementById('btnConnect').innerText = "Disconnect";
+                document.getElementById('btnConnect').className = "btn btn-danger";
+                document.getElementById('stConn').innerText = "Connected";
+                document.getElementById('stConn').style.color = "var(--success)";
+
+                document.getElementById('stSr').innerText = "Waiting...";
+                document.getElementById('stRange').innerText = "Waiting...";
+
+                document.getElementById('btnStart').disabled = false;
+                document.getElementById('btnTest').disabled = false;
+                document.getElementById('btnStopTx').disabled = false;
+            } catch (error) {
+                logToTerminal(`Connection error: ${error}`, 'error');
+            }
+        });
+
+        async function sendCommand(cmdStr) {
+            if (!txChar) return;
+            const data = new TextEncoder().encode(cmdStr + '\n');
+            await txChar.writeValue(data);
+            logToTerminal(`TX: ${cmdStr}`, 'tx');
+        }
+
+        document.getElementById('btnTest').addEventListener('click', () => sendCommand("test"));
+        document.getElementById('btnStopTx').addEventListener('click', () => sendCommand("P"));
+
+        document.getElementById('btnStart').addEventListener('click', () => {
+            const mics = document.getElementById('swMic').checked ? 1 : 0;
+            const accs = document.getElementById('swAcc').checked ? 1 : 0;
+            const irs = document.getElementById('swIr').checked ? 1 : 0;
+            if (mics === 0 && accs === 0 && irs === 0) {
+                logToTerminal("No sensors selected!", 'error'); return;
+            }
+            sendCommand(`START_REC:${mics},${accs},${irs}`);
+            document.getElementById('btnStart').disabled = true;
+            document.getElementById('btnStop').disabled = false;
+            ['swMic', 'swAcc', 'swIr'].forEach(id => document.getElementById(id).disabled = true);
+            isRecording = true;
+        });
+
+        document.getElementById('btnStop').addEventListener('click', () => {
+            sendCommand("S");
+            document.getElementById('btnStart').disabled = false;
+            document.getElementById('btnStop').disabled = true;
+            ['swMic', 'swAcc', 'swIr'].forEach(id => document.getElementById(id).disabled = false);
+            isRecording = false;
+        });
+
+        document.getElementById('btnSaveCSV').addEventListener('click', () => {
+            if (window.rawDataLog.length === 0) { logToTerminal("No data to save", "error"); return; }
+            let csvContent = "\uFEFF" + window.rawDataLog.join("\n"); // add BOM for Excel
+            let blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            let link = document.createElement("a");
+            if (link.download !== undefined) {
+                let url = URL.createObjectURL(blob);
+                link.setAttribute("href", url);
+                let dateStr = new Date().toISOString().replace(/:/g, "-").substring(0, 19);
+                link.setAttribute("download", `WentaoData_${dateStr}.csv`);
+                link.style.visibility = 'hidden';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            }
+            logToTerminal(`Exported ${window.rawDataLog.length} rows to CSV.`, "success");
+        });
+
+        /* =================== ECHARTS INIT =================== */
+        const imuChart = echarts.init(document.getElementById('imuChart'));
+        const micChart = echarts.init(document.getElementById('micChart'));
+
+        const imuData = [[], [], [], [], [], []];
+        const imuColors = ['#f87171', '#4ade80', '#60a5fa', '#fbbf24', '#c084fc', '#2dd4bf'];
+        const imuNames = ['Acc X', 'Acc Y', 'Acc Z', 'Gyr X', 'Gyr Y', 'Gyr Z'];
+
+        // Init IMU arrays
+        for (let i = 0; i < 6; i++) {
+            for (let j = 0; j < 100; j++) imuData[i].push(0);
+        }
+
+        imuChart.setOption({
+            tooltip: { trigger: 'axis' },
+            color: imuColors,
+            grid: { left: '3%', right: '4%', bottom: '5%', top: '5%', containLabel: true },
+            xAxis: {
+                type: 'category', boundaryGap: false, data: Array.from({ length: 100 }, (_, i) => i),
+                axisLabel: { show: false }, axisLine: { show: false }, splitLine: { show: false }
+            },
+            yAxis: [
+                { type: 'value', splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } } },
+                { type: 'value', alignTicks: true, splitLine: { show: false } }
+            ],
+            series: imuNames.map((name, i) => ({
+                name: name,
+                type: 'line',
+                showSymbol: false,
+                data: imuData[i],
+                yAxisIndex: i < 3 ? 0 : 1,
+                lineStyle: { width: 2 }
+            }))
+        });
+
+        const micData = Array.from({ length: 200 }, () => 0);
+        micChart.setOption({
+            grid: { left: '3%', right: '4%', bottom: '5%', top: '5%', containLabel: true },
+            xAxis: { type: 'category', data: Array.from({ length: 200 }, (_, i) => i), axisLabel: { show: false }, splitLine: { show: false } },
+            yAxis: { type: 'value', splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } } },
+            series: [{
+                type: 'bar',
+                data: micData,
+                itemStyle: {
+                    color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                        { offset: 0, color: '#3b82f6' },
+                        { offset: 1, color: '#10b981' }
+                    ])
+                },
+                barWidth: '80%',
+                animation: false
+            }]
+        });
+
+        // Resize handlers
+        window.addEventListener('resize', () => {
+            imuChart.resize();
+            micChart.resize();
+            if (renderer && camera) {
+                const container = document.getElementById('scene-container');
+                camera.aspect = container.clientWidth / container.clientHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(container.clientWidth, container.clientHeight);
+            }
+        });
+
+        /* =================== THREE.JS 3D PCB =================== */
+        const sceneContainer = document.getElementById('scene-container');
+        const scene = new THREE.Scene();
+
+        const camera = new THREE.PerspectiveCamera(45, sceneContainer.clientWidth / sceneContainer.clientHeight, 0.1, 100);
+        camera.position.set(0, 5, 10);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+        renderer.setSize(sceneContainer.clientWidth, sceneContainer.clientHeight);
+        sceneContainer.appendChild(renderer.domElement);
+
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(5, 10, 5);
+        scene.add(dirLight);
+
+        // Create a PCB-like Group
+        const pcbGroup = new THREE.Group();
+
+        // Main board (green)
+        const boardGeo = new THREE.BoxGeometry(4, 0.1, 6);
+        const boardMat = new THREE.MeshPhongMaterial({ color: 0x005500, shininess: 30 });
+        const board = new THREE.Mesh(boardGeo, boardMat);
+        pcbGroup.add(board);
+
+        // IC Chip (black)
+        const chipGeo = new THREE.BoxGeometry(1.5, 0.15, 1.5);
+        const chipMat = new THREE.MeshPhongMaterial({ color: 0x111111 });
+        const chip = new THREE.Mesh(chipGeo, chipMat);
+        chip.position.set(0, 0.1, 0);
+        pcbGroup.add(chip);
+
+        // Pins/Connectors (silver)
+        const pinGeo = new THREE.BoxGeometry(0.5, 0.2, 0.2);
+        const pinMat = new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.8, roughness: 0.2 });
+        for (let i = 0; i < 4; i++) {
+            const pin = new THREE.Mesh(pinGeo, pinMat);
+            pin.position.set(-1.8, 0.1, -2 + i * 1.2);
+            pcbGroup.add(pin);
+        }
+
+        scene.add(pcbGroup);
+
+        /* =================== THERMAL CANVAS =================== */
+        const thermalCanvas = document.getElementById('thermalCanvas');
+        const ctx = thermalCanvas.getContext('2d');
+        const GRID_SIZE = 8;
+        const cw = thermalCanvas.width;
+        const ch = thermalCanvas.height;
+        const cellW = cw / GRID_SIZE;
+        const cellH = ch / GRID_SIZE;
+
+        function drawThermal(data8x8) {
+            for (let r = 0; r < GRID_SIZE; r++) {
+                for (let c = 0; c < GRID_SIZE; c++) {
+                    const val = data8x8[r * GRID_SIZE + c];
+                    // 15C to 40C mapped to 0->1
+                    let t = (val - 15) / (40 - 15);
+                    t = Math.max(0, Math.min(1, t));
+                    // Blue (240) to Red (0)
+                    const hue = (1 - t) * 240;
+                    ctx.fillStyle = `hsl(${hue}, 100%, 50%)`;
+                    ctx.fillRect(c * cellW, r * cellH, cellW + 1, cellH + 1); // +1 prevents gaps
+                }
+            }
+        }
+
+        /* =================== REAL DATA PARSER =================== */
+        let lastChartUpdate = performance.now();
+        function parseRealData(str) {
+            const lines = str.trim().split('\n');
+            let imuUpdated = false;
+            let micUpdated = false;
+
+            for (let i = 0; i < lines.length; i++) {
+                let line = lines[i].trim();
+                if (line.startsWith('I:')) {
+                    const parts = line.substring(2).split(',');
+                    if (parts.length >= 6) {
+                        const ax = parseFloat(parts[0]);
+                        const ay = parseFloat(parts[1]);
+                        const az = parseFloat(parts[2]);
+                        const gx = parseFloat(parts[3]);
+                        const gy = parseFloat(parts[4]);
+                        const gz = parseFloat(parts[5]);
+
+                        imuData[0].push(ax); imuData[0].shift();
+                        imuData[1].push(ay); imuData[1].shift();
+                        imuData[2].push(az); imuData[2].shift();
+                        imuData[3].push(gx); imuData[3].shift();
+                        imuData[4].push(gy); imuData[4].shift();
+                        imuData[5].push(gz); imuData[5].shift();
+
+                        // Mahony algorithm processes dps as rad/s
+                        filter.update(gx * Math.PI / 180, gy * Math.PI / 180, gz * Math.PI / 180, ax, ay, az);
+                        pcbGroup.quaternion.set(filter.q1, filter.q2, filter.q3, filter.q0);
+                        imuUpdated = true;
+                    }
+                } else if (line.includes('IMU:') && (line.includes('OK') || line.includes('ERR'))) {
+                    const label = document.getElementById('nameAcc');
+                    if (line.includes('ERR')) { label.style.color = 'var(--danger)'; label.innerText = 'IMU (ERR)'; }
+                    else { label.style.color = 'var(--text-main)'; label.innerText = 'IMU (6-Axis)'; }
+
+                    let accM = line.match(/Acc:\s*([^|]+)/);
+                    let gyrM = line.match(/Gyro:\s*([^\s|]+)/);
+                    if (accM && gyrM) document.getElementById('stRange').innerText = `±${accM[1].trim()}, ±${gyrM[1].trim()}`;
+                } else if (line.includes('MIC:') && (line.includes('OK') || line.includes('ERR'))) {
+                    const label = document.getElementById('nameMic');
+                    if (line.includes('ERR')) { label.style.color = 'var(--danger)'; label.innerText = 'Mic (ERR)'; }
+                    else { label.style.color = 'var(--text-main)'; label.innerText = 'Microphone'; }
+
+                    let rateM = line.match(/Rate:\s*([^\s]+)/);
+                    if (rateM) document.getElementById('stSr').innerText = `IMU:100Hz / Mic:${rateM[1]}`;
+                } else if (line.includes('MLX:') && (line.includes('OK') || line.includes('ERR'))) {
+                    const label = document.getElementById('nameIr');
+                    if (line.includes('ERR')) { label.style.color = 'var(--danger)'; label.innerText = 'Thermal IR (ERR)'; }
+                    else { label.style.color = 'var(--text-main)'; label.innerText = 'Thermal IR'; }
+                } else if (line.startsWith('MIC:')) {
+                    const parts = line.substring(4).split(',');
+                    if (parts.length >= 1 && !isNaN(parseFloat(parts[0]))) {
+                        micData.push(parseFloat(parts[0]));
+                        micData.shift();
+                        micUpdated = true;
+                    }
+                }
+            }
+
+            const now = performance.now();
+            if (now - lastChartUpdate > 30) {
+                if (imuUpdated) {
+                    imuChart.setOption({ series: imuData.map(d => ({ data: d })) });
+                }
+                if (micUpdated) {
+                    micChart.setOption({ series: [{ data: micData }] });
+                }
+                lastChartUpdate = now;
+            }
+        }
+
+        /* =================== MOCK DATA SIMULATION =================== */
+        // We removed mock data generation by user request. Charts wait for true feed.
+
+        function animate(time) {
+            requestAnimationFrame(animate);
+            // Render 3D Scene continuously (PCB rotation will be updated when real data feeds Mahony filter)
+            renderer.render(scene, camera);
+        }
+        animate(0);
+
+        // Provide an initial drawing for thermal
+        drawThermal(new Array(64).fill(22));
+
+    </script>
+
+</body>
+
+</html>
