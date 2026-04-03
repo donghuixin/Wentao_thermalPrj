@@ -114,6 +114,14 @@
                 <div class="stat-box"><span>Data Format</span><span class="stat-val" id="stFormat" style="color:#a78bfa;">Binary Struct</span></div>
             </div>
 
+            <div class="sidebar-section">
+                <h4 style="color: var(--text-muted); font-size: 12px; text-transform: uppercase;">Real-time Sampling Rate</h4>
+                <div class="stat-box"><span>Packet Rate</span><span class="stat-val" id="packetRate">0 Hz</span></div>
+                <div class="stat-box"><span>Mic Rate</span><span class="stat-val" id="micRate">0 Hz</span></div>
+                <div class="stat-box"><span>IMU Rate</span><span class="stat-val" id="imuRate">0 Hz</span></div>
+                <div class="stat-box"><span>Thermal Rate</span><span class="stat-val" id="thermalRate">0 Hz</span></div>
+            </div>
+
             <div style="flex: 1;"></div>
             <div class="sidebar-section" style="gap: 8px;">
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
@@ -122,7 +130,13 @@
                     <button id="btnStart" class="btn btn-success" style="padding: 10px 5px;" disabled>▶ Start</button>
                     <button id="btnStop" class="btn btn-danger" style="padding: 10px 5px;" disabled>⏹ Stop</button>
                 </div>
-                <button id="btnSaveCSV" class="btn btn-primary" style="background: linear-gradient(135deg, #8b5cf6, #7c3aed); margin-top: 5px;">💾 Save CSV</button>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 5px;">
+                    <button id="btnSaveCSV" class="btn btn-primary" style="background: linear-gradient(135deg, #8b5cf6, #7c3aed); padding: 10px 5px;">💾 Save CSV</button>
+                    <button id="btnClearData" class="btn btn-danger" style="background: linear-gradient(135deg, #ef4444, #dc2626); padding: 10px 5px;">🗑️ Clear Data</button>
+                </div>
+                <div id="dataCounter" style="text-align: center; font-size: 12px; color: var(--text-muted); margin-top: 5px;">
+                    Data: <span id="dataCount" style="color: var(--accent); font-weight: 600;">0</span> frames
+                </div>
             </div>
         </div>
 
@@ -246,6 +260,13 @@
 
         let bleDevice = null, txChar = null;
         let lastSeq = -1;
+        
+        // Sampling rate calculation
+        let packetCount = 0;
+        let micSampleCount = 0;
+        let imuSampleCount = 0;
+        let thermalRowCount = 0;
+        let rateStartTime = Date.now();
 
         /* =================== ECHARTS & THERMAL CANVASES =================== */
         const imuChart = echarts.init(document.getElementById('imuChart'));
@@ -471,6 +492,12 @@
                     // Store RAW CSV data
                     window.rawDataLog.push(csvLine);
                     
+                    // Update sampling rate counters
+                    packetCount++;
+                    if (mLen > 0) micSampleCount += mLen / 2; // mLen is in bytes, divide by 2 for sample count
+                    if (iLen === 12) imuSampleCount++;
+                    if (fLen > 0) thermalRowCount++;
+                    
                     // Terminal logging (for visualization feedback)
                     let micLogData = mLen > 0 ? `Len: ${mLen}B (Vol: ${(lastVol*100).toFixed(1)}%)` : "Null";
                     let irLogData = fLen > 0 ? `Len: ${fLen}B` : "Null";
@@ -507,24 +534,107 @@
             const irs = document.getElementById('swIr').checked ? 1 : 0;
             sendCommand(`START_REC:${mics},${accs},${irs}`);
             document.getElementById('btnStart').disabled = true; document.getElementById('btnStop').disabled = false;
+            
+            // Reset rate counters on start
+            packetCount = 0;
+            micSampleCount = 0;
+            imuSampleCount = 0;
+            thermalRowCount = 0;
+            rateStartTime = Date.now();
         });
         document.getElementById('btnStop').addEventListener('click', () => {
             sendCommand("S");
             document.getElementById('btnStart').disabled = false; document.getElementById('btnStop').disabled = true;
             document.getElementById('lossIndicator').innerText = "Paused";
             document.getElementById('lossIndicator').style.color = "var(--text-muted)";
+            
+            // Reset rate counters
+            packetCount = 0;
+            micSampleCount = 0;
+            imuSampleCount = 0;
+            thermalRowCount = 0;
+            rateStartTime = Date.now();
         });
 
         document.getElementById('btnSaveCSV').addEventListener('click', () => {
             if (window.rawDataLog.length <= 1) { logToTerminal("No data collected yet.", "error"); return; }
-            const csvData = "\uFEFF" + window.rawDataLog.join('\n'); // BOM for excel
-            const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8;' });
+            
+            // Use chunked approach to avoid string length limits
+            const chunkSize = 1000;
+            const chunks = ["\uFEFF"]; // BOM for excel
+            
+            for (let i = 0; i < window.rawDataLog.length; i += chunkSize) {
+                const chunk = window.rawDataLog.slice(i, i + chunkSize);
+                chunks.push(chunk.join('\n'));
+                if (i + chunkSize < window.rawDataLog.length) {
+                    chunks.push('\n'); // Add newline between chunks
+                }
+            }
+            
+            const blob = new Blob(chunks, { type: 'text/csv;charset=utf-8;' });
             const link = document.createElement("a");
             link.setAttribute("href", URL.createObjectURL(blob));
             link.setAttribute("download", `Wentao_Sensors_${Date.now()}.csv`);
             document.body.appendChild(link); link.click(); document.body.removeChild(link);
             logToTerminal(`Exported comprehensive CSV (${window.rawDataLog.length - 1} frames).`, 'success');
         });
+
+        document.getElementById('btnClearData').addEventListener('click', () => {
+            const dataCount = window.rawDataLog.length - 1; // Exclude header
+            if (dataCount === 0) {
+                logToTerminal("No data to clear.", 'info');
+                return;
+            }
+            
+            if (confirm(`Are you sure you want to clear ${dataCount} frames of collected data? This cannot be undone.`)) {
+                // Reset to header only
+                let micHeaders = Array.from({length: 80}, (_,i) => `Mic_Raw_${i}`).join(',');
+                let thermalHeaders = Array.from({length: 32}, (_,i) => `Thermal_Raw_${i}`).join(',');
+                window.rawDataLog = [`Seq,Timestamp,Mic_Valid_Len,${micHeaders},Thermal_Valid_Len,${thermalHeaders},IMU_Valid_Len,IMU_Raw_Ax,IMU_Raw_Ay,IMU_Raw_Az,IMU_Raw_Gx,IMU_Raw_Gy,IMU_Raw_Gz`];
+                
+                document.getElementById('dataCount').innerText = '0';
+                logToTerminal(`Cleared ${dataCount} frames of data.`, 'success');
+            }
+        });
+
+        // Update data counter and sampling rates periodically
+        setInterval(() => {
+            const count = window.rawDataLog.length - 1; // Exclude header
+            document.getElementById('dataCount').innerText = count;
+            
+            // Calculate sampling rates
+            const now = Date.now();
+            const elapsedSec = (now - rateStartTime) / 1000;
+            
+            if (elapsedSec >= 1.0) { // Update every second
+                const packetRate = (packetCount / elapsedSec).toFixed(1);
+                const micRate = (micSampleCount / elapsedSec).toFixed(0);
+                const imuRate = (imuSampleCount / elapsedSec).toFixed(0);
+                const thermalFrameRate = (thermalRowCount / elapsedSec / 24).toFixed(2); // 24 rows per frame
+                
+                document.getElementById('packetRate').innerText = `${packetRate} Hz`;
+                document.getElementById('micRate').innerText = `${micRate} Hz`;
+                document.getElementById('imuRate').innerText = `${imuRate} Hz`;
+                document.getElementById('thermalRate').innerText = `${thermalFrameRate} Hz`;
+                
+                // Color code based on expected rates
+                const micEl = document.getElementById('micRate');
+                micEl.style.color = (micRate >= 15000) ? 'var(--success)' : (micRate >= 3000) ? '#fbbf24' : 'var(--danger)';
+                
+                const imuEl = document.getElementById('imuRate');
+                imuEl.style.color = (imuRate >= 180) ? 'var(--success)' : (imuRate >= 35) ? '#fbbf24' : 'var(--danger)';
+                
+                const thermalEl = document.getElementById('thermalRate');
+                thermalEl.style.color = (thermalFrameRate >= 7) ? 'var(--success)' : (thermalFrameRate >= 1.5) ? '#fbbf24' : 'var(--danger)';
+                
+                // Reset counters
+                packetCount = 0;
+                micSampleCount = 0;
+                imuSampleCount = 0;
+                thermalRowCount = 0;
+                rateStartTime = now;
+            }
+        }, 1000);
 
         // 60FPS Render Loop
         function animate() {
