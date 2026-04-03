@@ -27,30 +27,109 @@ unsigned long lastImuTime = 0;
 unsigned long lastMlxRowTime = 0;
 int currentMlxRow = 0;
 
-#include <Adafruit_MLX90640.h>
+// Removed duplicate TwoWire instance. Both IMU and MLX share the standard Wire
+// (D4/D5) bus!
 
-Adafruit_MLX90640 mlx;
-float mlxFrameBuffer[768]; // 24 * 32
-bool frameAvailable = false;
-unsigned long lastMlxReadTime = 0;
+// ===================== MLX90642 标准定义 =====================
+#define MLX90642_I2C_ADDR    0x66   
+#define MLX90642_STATUS_REG  0x3C14  // 状态寄存器地址 [cite: 966]
+#define MLX90642_CONFIG_ADDR 0x11F0  // 刷新率 EEPROM 地址 [cite: 501]
+#define MLX90642_RAM_START   0x342C  // To 数据起始地址 [cite: 456, 943]
+#define MLX90642_OP_CONFIG   0x3A2E  // 配置写入专用 Opcode [cite: 484]
 
-// MLX90640 helper to check status register without blocking
-bool checkMLXDataReady() {
-  Wire.beginTransmission(0x33); // 0x33 is default MLX90640 address, but we use 0x66 ??
-  // Wait, the MLX90640 default I2C address is 0x33.
-  // Wait, earlier we were using 0x66. The user's address is 0x66!
-  Wire.beginTransmission(0x66);
-  Wire.write(0x80); 
-  Wire.write(0x00);
-  if (Wire.endTransmission(false) != 0) return false;
-  
-  Wire.requestFrom((uint8_t)0x66, (uint8_t)2);
-  if (Wire.available() == 2) {
-    uint16_t status = (Wire.read() << 8) | Wire.read();
-    return (status & 0x0008) != 0;
+class ThermalDataCollector {
+public:
+  unsigned long lastFrameTime = 0;
+
+  bool begin() {
+    Wire.begin();
+    // 降低时钟速率到标准的 100kHz。实验连线时 400kHz
+    // 极易因为分布电容导致通讯截断报错！
+    Wire.setClock(100000);
+
+    uint16_t config = readRegister(MLX90642_CONFIG_ADDR);
+    if (config == 0 || config == 0xFFFF)
+      return false;
+
+    // 设置刷新率为 8Hz (Bit 0-2 设为 100)
+    config &= ~0x0007;
+    config |= 0x0004;
+    writeRegister(MLX90642_CONFIG_ADDR, config);
+    return true;
   }
-  return false;
-}
+
+  bool readRow(int r, uint8_t *rowData) {
+    return readBlock(MLX90642_RAM_START + r * 32, rowData, 32);
+  }
+
+private:
+  uint16_t readRegister(uint16_t regAddress) {
+    Wire.beginTransmission(MLX90642_I2C_ADDR);
+    Wire.write(regAddress >> 8);
+    Wire.write(regAddress & 0xFF);
+    if (Wire.endTransmission(false) != 0)
+      return 0;
+    Wire.requestFrom((uint8_t)MLX90642_I2C_ADDR, (uint8_t)2);
+    uint16_t data = 0;
+    if (Wire.available() == 2) {
+      data = Wire.read() << 8;
+      data |= Wire.read();
+    }
+    return data;
+  }
+
+  bool readBlock(uint16_t startAddress, uint8_t *buffer, int words) {
+    int offset = 0;
+    int idx = 0;
+    while (words > 0) {
+      int chunkWords = (words > 16) ? 16 : words;
+      int chunkBytes = chunkWords * 2;
+
+      Wire.beginTransmission(MLX90642_I2C_ADDR);
+      Wire.write((startAddress + offset) >> 8);
+      Wire.write((startAddress + offset) & 0xFF);
+      uint8_t err = Wire.endTransmission(false);
+      if (err != 0) {
+        bleuart.printf("SYS: endTrans err %d at %X\n", err,
+                       startAddress + offset);
+        return false;
+      }
+
+      int req =
+          Wire.requestFrom((uint8_t)MLX90642_I2C_ADDR, (uint8_t)chunkBytes);
+      if (req != chunkBytes) {
+        bleuart.printf("SYS: reqFrom %d != %d\n", req, chunkBytes);
+        return false;
+      }
+
+      int bytesRead = 0;
+      while (Wire.available() && bytesRead < chunkBytes) {
+        buffer[idx++] = Wire.read();
+        bytesRead++;
+      }
+
+      if (bytesRead != chunkBytes) {
+        bleuart.printf("SYS: available %d != %d\n", bytesRead, chunkBytes);
+        return false;
+      }
+
+      words -= chunkWords;
+      offset += chunkWords;
+    }
+    return true;
+  }
+
+  void writeRegister(uint16_t regAddress, uint16_t data) {
+    Wire.beginTransmission(MLX90642_I2C_ADDR);
+    Wire.write(regAddress >> 8);
+    Wire.write(regAddress & 0xFF);
+    Wire.write(data >> 8);
+    Wire.write(data & 0xFF);
+    Wire.endTransmission();
+  }
+};
+
+ThermalDataCollector thermalCollector;
 
 void onPDMdata() {
   int bytesAvailable = PDM.available();
@@ -66,7 +145,7 @@ void sendSystemStatus() {
                  imuOnline ? "OK" : "ERR");
   bleuart.printf("MIC: %s | Internal | Rate: 16kHz\n",
                  micOnline ? "OK" : "ERR");
-  bleuart.printf("MLX: %s | Adafruit Calibrated | 8Hz\n", mlxOnline ? "OK" : "ERR");
+  bleuart.printf("MLX: %s | Addr: 0x66 | 8Hz\n", mlxOnline ? "OK" : "ERR");
   bleuart.println("=====================");
 }
 
@@ -118,20 +197,7 @@ void setup() {
   Bluefruit.Advertising.restartOnDisconnect(true);
   Bluefruit.Advertising.start(0);
 
-  Wire.begin();
-  Wire.setClock(400000); // Adafruit Library works best at 400kHz Fast Mode for MLX90640 math
-  
-  if (mlx.begin(0x66, &Wire)) {
-      mlxOnline = true;
-      mlx.setMode(MLX90640_CHESS);
-      mlx.setResolution(MLX90640_ADC_18BIT);
-      mlx.setRefreshRate(MLX90640_8_HZ);
-  } else if (mlx.begin(0x33, &Wire)) {
-      mlxOnline = true; // Fallback to standard 0x33
-      mlx.setMode(MLX90640_CHESS);
-      mlx.setResolution(MLX90640_ADC_18BIT);
-      mlx.setRefreshRate(MLX90640_8_HZ);
-  }
+  mlxOnline = thermalCollector.begin();
 
   myIMU.settings.gyroRange = 2000;
   myIMU.settings.accelRange = 2;
@@ -156,46 +222,37 @@ void loop() {
   if (isRecording) {
     unsigned long now = millis();
 
-    // 1. Time Division Multiplexing - MLX Data 
-    if (recIr && mlxOnline) {
-      if (!frameAvailable && checkMLXDataReady()) {
-          // If a frame is ready, pull the whole frame (Takes ~30ms)
-          if (mlx.getFrame(mlxFrameBuffer) == 0) {
-              frameAvailable = true;
-              currentMlxRow = 0;
-          }
-      }
+    // 1. Time Division Multiplexing - MLX Data (5ms per row, finishes 24 rows
+    // in 120ms -> covers 8Hz)
+    if (recIr && mlxOnline && (now - lastMlxRowTime >= 5)) {
+      lastMlxRowTime = now;
 
-      // If we have a buffered frame, transmit it row by row!
-      // This spreads the 24 rows across 24 loop increments, preserving 5ms gaps.
-      if (frameAvailable && (now - lastMlxRowTime >= 5)) {
-        lastMlxRowTime = now;
-
-        // Compress the float data exactly matching the old Web/Python parser logic: temp * 50
+      uint8_t rowData[64];
+      if (thermalCollector.readRow(currentMlxRow, rowData)) {
+        // T + rowHex(2) + : + data(128) + \n = 133 chars.
         char txBuf[140];
         sprintf(txBuf, "T%02X:", currentMlxRow);
         int idx = 4;
-        
-        for (int c = 0; c < 32; c++) {
-          float temp = mlxFrameBuffer[currentMlxRow * 32 + c];
-          
-          int16_t mappedRaw = (int16_t)(temp * 50.0f);
-          
-          // Re-encode into the legacy big-endian 4-char hex
-          // So no HTML or python code changes at all!
-          sprintf(txBuf + idx, "%04X", (uint16_t)mappedRaw);
-          idx += 4;
+        for (int i = 0; i < 64; i++) {
+          sprintf(txBuf + idx, "%02X", rowData[i]);
+          idx += 2;
         }
         txBuf[idx++] = '\n';
         txBuf[idx] = '\0';
 
         bleuart.print(txBuf);
-
-        currentMlxRow++;
-        if (currentMlxRow >= 24) {
-          frameAvailable = false; // Done transmitting 1 full frame
+      } else {
+        static unsigned long lastMlxErrTime = 0;
+        if (now - lastMlxErrTime > 1500) {
+          bleuart.printf("SYS: [ERR] MLX I2C read ROW %d failed.\n",
+                         currentMlxRow);
+          lastMlxErrTime = now;
         }
       }
+
+      currentMlxRow++;
+      if (currentMlxRow >= 24)
+        currentMlxRow = 0;
     }
 
     // 2. Time Division Multiplexing - IMU Data (1 sample per 10ms -> 100Hz)
