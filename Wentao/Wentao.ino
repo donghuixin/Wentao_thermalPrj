@@ -1,4 +1,4 @@
-// Last Update Time: 2026-04-03 01:21
+// Last Update Time: 2026-04-03 15:18
 #include <LSM6DS3.h>
 #include <PDM.h>
 #include <Wire.h>
@@ -31,11 +31,11 @@ int currentMlxRow = 0;
 // (D4/D5) bus!
 
 // ===================== MLX90642 标准定义 =====================
-#define MLX90642_I2C_ADDR    0x66   
-#define MLX90642_STATUS_REG  0x3C14  // 状态寄存器地址 [cite: 966]
-#define MLX90642_CONFIG_ADDR 0x11F0  // 刷新率 EEPROM 地址 [cite: 501]
-#define MLX90642_RAM_START   0x342C  // To 数据起始地址 [cite: 456, 943]
-#define MLX90642_OP_CONFIG   0x3A2E  // 配置写入专用 Opcode [cite: 484]
+#define MLX90642_I2C_ADDR 0x66
+#define MLX90642_STATUS_REG 0x3C14  // 状态寄存器地址 [cite: 966]
+#define MLX90642_CONFIG_ADDR 0x11F0 // 刷新率 EEPROM 地址 [cite: 501]
+#define MLX90642_RAM_START 0x342C   // To 数据起始地址 [cite: 456, 943]
+#define MLX90642_OP_CONFIG 0x3A2E   // 配置写入专用 Opcode [cite: 484]
 
 class ThermalDataCollector {
 public:
@@ -58,8 +58,37 @@ public:
     return true;
   }
 
+  // 安全单点读取，按照库中 readAddr_signed 的安全寻址机制提取一整行
+  // 修正严重 BUG：每个像素点在 RAM 中占据 2 个地址 (Address offset = 像素编号 * 2)
   bool readRow(int r, uint8_t *rowData) {
-    return readBlock(MLX90642_RAM_START + r * 32, rowData, 32);
+    int idx = 0;
+    for (int c = 0; c < 32; c++) {
+      // 当前这一行这一列的绝对像素编号
+      uint16_t pxl_idx = r * 32 + c;
+      // 在内存中的基础偏移量，极其重要：必须乘以 2 
+      uint16_t startAddress = MLX90642_RAM_START + pxl_idx * 2; 
+
+      Wire.beginTransmission(MLX90642_I2C_ADDR);
+      Wire.write(startAddress >> 8);
+      Wire.write(startAddress & 0xFF);
+      
+      uint8_t err = Wire.endTransmission(false);
+      if (err != 0) {
+        bleuart.printf("SYS: [ERR] MLX endTrans err %d at %X\n", err, startAddress);
+        return false;
+      }
+
+      int req = Wire.requestFrom((uint8_t)MLX90642_I2C_ADDR, (uint8_t)2);
+      if (req != 2 || Wire.available() < 2) {
+         bleuart.printf("SYS: [ERR] MLX request failed at %X\n", startAddress);
+         return false;
+      }
+
+      // 根据协议保持大端序提取
+      rowData[idx++] = Wire.read(); // MSB
+      rowData[idx++] = Wire.read(); // LSB
+    }
+    return true;
   }
 
 private:
@@ -76,47 +105,6 @@ private:
       data |= Wire.read();
     }
     return data;
-  }
-
-  bool readBlock(uint16_t startAddress, uint8_t *buffer, int words) {
-    int offset = 0;
-    int idx = 0;
-    while (words > 0) {
-      int chunkWords = (words > 16) ? 16 : words;
-      int chunkBytes = chunkWords * 2;
-
-      Wire.beginTransmission(MLX90642_I2C_ADDR);
-      Wire.write((startAddress + offset) >> 8);
-      Wire.write((startAddress + offset) & 0xFF);
-      uint8_t err = Wire.endTransmission(false);
-      if (err != 0) {
-        bleuart.printf("SYS: endTrans err %d at %X\n", err,
-                       startAddress + offset);
-        return false;
-      }
-
-      int req =
-          Wire.requestFrom((uint8_t)MLX90642_I2C_ADDR, (uint8_t)chunkBytes);
-      if (req != chunkBytes) {
-        bleuart.printf("SYS: reqFrom %d != %d\n", req, chunkBytes);
-        return false;
-      }
-
-      int bytesRead = 0;
-      while (Wire.available() && bytesRead < chunkBytes) {
-        buffer[idx++] = Wire.read();
-        bytesRead++;
-      }
-
-      if (bytesRead != chunkBytes) {
-        bleuart.printf("SYS: available %d != %d\n", bytesRead, chunkBytes);
-        return false;
-      }
-
-      words -= chunkWords;
-      offset += chunkWords;
-    }
-    return true;
   }
 
   void writeRegister(uint16_t regAddress, uint16_t data) {
