@@ -53,7 +53,7 @@ public:
 
 // 缓冲池扩容与评估论证
 RingBuf<uint8_t, 4096> micBuf; // 16kHz*2B=32KB/s。5ms需160B。4096B足以支撑连续 125ms 的蓝牙阻塞不丢数。
-RingBuf<uint8_t, 2048> thermalBuf; // 8Hz帧(1536B)。2048B可完全缓存1帧完整堆积。
+RingBuf<uint8_t, 8192> thermalBuf; // 提升到 8192B，可缓存至少 5 帧完整的红外数据图。
 RingBuf<uint8_t, 256> imuBuf; // 每10ms生产12B(1.2KB/s)。256B可支撑 200ms 的阻塞积压。
 
 short sampleBuffer[512]; // PDM library DMA Cache
@@ -156,7 +156,7 @@ void prph_connect_callback(uint16_t conn_handle) {
     conn->requestMtuExchange(247);
     // Request an aggressive connection interval (7.5ms ~ 15ms)
     // Helps Android / Windows / iOS drain the Nordic TX FIFO faster
-    conn->requestConnectionParameter(6, 12, 0, 400);
+    conn->requestConnectionParameter(6); // interval 6*1.25=7.5ms, defaults used for latency/timeout
   }
 }
 
@@ -241,11 +241,15 @@ void loop() {
   if (isRecording) {
     unsigned long now = millis();
 
-    if (recIr && mlxOnline && (now - lastMlxReadTime >= 5)) {
-      lastMlxReadTime = now;
-      thermalCollector.readRowToBuf(currentMlxRow);
-      currentMlxRow++;
-      if (currentMlxRow >= 24) currentMlxRow = 0;
+    // 只要距离上次读取大于 2ms 且缓冲池有一行 (64B) 以上空余量，就提早并发读取下一行
+    // 避免 5ms 的死板卡点导致来不急填满缓冲区
+    if (recIr && mlxOnline && (now - lastMlxReadTime >= 2)) {
+      if (thermalBuf.available() < (8192 - 64)) {
+        lastMlxReadTime = now;
+        thermalCollector.readRowToBuf(currentMlxRow);
+        currentMlxRow++;
+        if (currentMlxRow >= 24) currentMlxRow = 0;
+      }
     }
 
     if (recAcc && imuOnline && (now - lastImuTime >= 10)) {
