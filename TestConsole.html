@@ -204,8 +204,10 @@
 
         /* =================== TERMINAL & GLOBALS =================== */
         const terminal = document.getElementById('terminal');
-        let micHeaders = Array.from({length: 80}, (_,i) => `MicVol_${i}`).join(',');
-        window.rawDataLog = [`Timestamp,Seq,IMU_Ax,IMU_Ay,IMU_Az,IMU_Gx,IMU_Gy,IMU_Gz,${micHeaders},ThermalPx0_to_Px31`]; // Header
+        // CSV Headers for Raw Data - matches the binary packet structure from the image
+        let micHeaders = Array.from({length: 80}, (_,i) => `Mic_Raw_${i}`).join(',');
+        let thermalHeaders = Array.from({length: 32}, (_,i) => `Thermal_Raw_${i}`).join(',');
+        window.rawDataLog = [`Seq,Timestamp,Mic_Valid_Len,${micHeaders},Thermal_Valid_Len,${thermalHeaders},IMU_Valid_Len,IMU_Raw_Ax,IMU_Raw_Ay,IMU_Raw_Az,IMU_Raw_Gx,IMU_Raw_Gy,IMU_Raw_Gz`]; // Header
 
         function logToTerminal(message, type = 'info') {
             const div = document.createElement('div');
@@ -386,18 +388,71 @@
                     
                     const timeStamp = view.getUint32(1, false);
 
-                    // --- Variable Extractor ---
-                    let csvLine = `${timeStamp},${seq}`;
-                    let imuLogData = "Null", micLogData = "Null", irLogData = "Null";
+                    // --- CSV RAW DATA BUILDER (按照二进制包结构) ---
+                    // CSV Structure: Seq, Timestamp, Mic_Valid_Len, Mic_Raw[80], Thermal_Valid_Len, Thermal_Raw[32], IMU_Valid_Len, IMU_Raw[6]
+                    let csvLine = `${seq},${timeStamp}`;
+                    
+                    // Mic Data [5 -> 165] - Save RAW int16 values
+                    const mLen = view.getUint8(5);
+                    const mOffset = 6;
+                    csvLine += `,${mLen}`;
+                    let micRawArr = new Array(80).fill("");
+                    let lastVol = 0;
+                    if (mLen > 0 && mLen <= 160) {
+                        for(let i=0; i<mLen; i+=2) {
+                            const sample = view.getInt16(mOffset+i, true);
+                            micRawArr[i/2] = sample; // Store raw int16 value
+                            const vol = Math.abs(sample) / 32768.0;
+                            lastVol = vol;
+                        }
+                        
+                        micData.push(lastVol);
+                        micData.shift();
+                        micUpdatePending = true;
+                    }
+                    csvLine += `,${micRawArr.join(',')}`;
 
-                    // IMU Data [231 -> 243] (Decoded first for CSV structure)
+                    // Thermal Data [166 -> 230] - Save RAW int16 values
+                    const fLenRaw = view.getUint8(166);
+                    let fLen = fLenRaw;
+                    let rowId = -1;
+                    if ((fLenRaw & 0x80) !== 0) {
+                        fLen = 64;
+                        rowId = fLenRaw & 0x1F;
+                    }
+                    const fOffset = 167;
+                    csvLine += `,${fLenRaw}`;
+                    let thermalRawArr = new Array(32).fill("");
+                    if (fLen > 0 && fLen <= 64) {
+                        if (rowId !== -1) {
+                            thermalIdx = rowId * 32;
+                        }
+                        for(let i=0; i<fLen; i+=2) {
+                            const rawVal = view.getInt16(fOffset+i, false);
+                            thermalRawArr[i/2] = rawVal; // Store raw int16 value
+                            let tempC = rawVal / 50.0;
+                            thermalData[thermalIdx++] = tempC;
+                            if (thermalIdx >= 768) {
+                                thermalIdx = 0;
+                                thermalUpdated = true;
+                            }
+                        }
+                    }
+                    csvLine += `,${thermalRawArr.join(',')}`;
+
+                    // IMU Data [231 -> 243] - Save RAW int16 values
                     const iLen = view.getUint8(231);
                     const iOffset = 232;
-                    let cAx="0", cAy="0", cAz="0", cGx="0", cGy="0", cGz="0";
+                    csvLine += `,${iLen}`;
+                    let imuRawArr = ["","","","","",""];
+                    let imuLogData = "Null";
                     if (iLen === 12) {
                         const ax = view.getInt16(iOffset, true); const ay = view.getInt16(iOffset+2, true); const az = view.getInt16(iOffset+4, true);
                         const gx = view.getInt16(iOffset+6, true); const gy = view.getInt16(iOffset+8, true); const gz = view.getInt16(iOffset+10, true);
                         
+                        imuRawArr = [ax, ay, az, gx, gy, gz]; // Store raw int16 values
+                        
+                        // Process for visualization
                         const af = 2.0 / 32768.0; const gf = 2000.0 / 32768.0;
                         const fax = ax*af; const fay = ay*af; const faz = az*af; 
                         const fgx = gx*gf; const fgy = gy*gf; const fgz = gz*gf;
@@ -409,66 +464,16 @@
                         pcbGroup.quaternion.set(filter.q1, filter.q2, filter.q3, filter.q0);
                         imuUpdatePending = true;
 
-                        cAx = fax.toFixed(2); cAy = fay.toFixed(2); cAz = faz.toFixed(2);
-                        cGx = fgx.toFixed(2); cGy = fgy.toFixed(2); cGz = fgz.toFixed(2);
-                        imuLogData = `A[${cAx},${cAy},${cAz}] G[${cGx},${cGy},${cGz}]`;
+                        imuLogData = `A[${fax.toFixed(2)},${fay.toFixed(2)},${faz.toFixed(2)}] G[${fgx.toFixed(2)},${fgy.toFixed(2)},${fgz.toFixed(2)}]`;
                     }
-                    csvLine += `,${cAx},${cAy},${cAz},${cGx},${cGy},${cGz}`;
+                    csvLine += `,${imuRawArr.join(',')}`;
 
-                    // Mic Data [5 -> 165]
-                    const mLen = view.getUint8(5);
-                    const mOffset = 6;
-                    let micVolArr = new Array(80).fill("0.0000");
-                    let lastVol = 0;
-                    if (mLen > 0 && mLen <= 160) {
-                        for(let i=0; i<mLen; i+=2) {
-                            const sample = view.getInt16(mOffset+i, true);
-                            const vol = Math.abs(sample) / 32768.0;
-                            micVolArr[i/2] = vol.toFixed(4);
-                            lastVol = vol;
-                        }
-                        
-                        micData.push(lastVol);
-                        micData.shift();
-                        micUpdatePending = true;
-                        const seqStr = micVolArr.slice(0, mLen/2).map(v => (v*100).toFixed(1) + '%').join(', ');
-                        micLogData = `Vol(last): ${(lastVol*100).toFixed(1)}% | Seq: [${seqStr}]`;
-                    }
-                    csvLine += `,${micVolArr.join(',')}`;
-
-                    // Thermal Data [166 -> 230]
-                    const fLenRaw = view.getUint8(166);
-                    let fLen = fLenRaw;
-                    let rowId = -1;
-                    if ((fLenRaw & 0x80) !== 0) {
-                        fLen = 64;
-                        rowId = fLenRaw & 0x1F;
-                    }
-                    const fOffset = 167;
-                    let tArr = []; // Store raw floats for CSV
-                    if (fLen > 0 && fLen <= 64) {
-                        if (rowId !== -1) {
-                            // Sync thermal drawing to correct row
-                            thermalIdx = rowId * 32;
-                        }
-                        for(let i=0; i<fLen; i+=2) {
-                            const rawVal = view.getInt16(fOffset+i, false);
-                            let tempC = rawVal / 50.0;
-                            tArr.push(tempC.toFixed(1));
-                            thermalData[thermalIdx++] = tempC;
-                            if (thermalIdx >= 768) {
-                                thermalIdx = 0;
-                                thermalUpdated = true;
-                            }
-                        }
-                        irLogData = `Len: ${fLen}B (Px ${tArr[0]}C..${tArr[tArr.length-1]}C)`;
-                    } else {
-                        tArr.push(""); // empty row
-                    }
-                    csvLine += `,${tArr.join(';')}`;
-
-                    // Store global CSV
+                    // Store RAW CSV data
                     window.rawDataLog.push(csvLine);
+                    
+                    // Terminal logging (for visualization feedback)
+                    let micLogData = mLen > 0 ? `Len: ${mLen}B (Vol: ${(lastVol*100).toFixed(1)}%)` : "Null";
+                    let irLogData = fLen > 0 ? `Len: ${fLen}B` : "Null";
 
                     // Throttle terminal prints to ~4 times a second (mod 50 out of 200 packets/sec)
                     logCounter++;
