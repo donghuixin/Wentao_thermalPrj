@@ -354,11 +354,21 @@
                         return;
                     }
 
-                    // ----------- BINARY TLV PARSER -----------
-                    let offset = 0;
-                    if(offset >= view.byteLength) return;
+                    // ----------- BINARY FIXED STRUCTURE PARSER -----------
+                    // 固定的 244 字节包结构解码：
+                    // [0]       Seq
+                    // [1-4]     Timestamp (4 bytes, Big Endian)
+                    // [5]       Mic Valid Length
+                    // [6-165]   Mic Data (160 bytes max, padded with 0)
+                    // [166]     Thermal Valid Length
+                    // [167-230] Thermal Data (64 bytes max, padded with 0)
+                    // [231]     IMU Valid Length
+                    // [232-243] IMU Data (12 bytes max, padded with 0)
 
-                    const seq = view.getUint8(offset++);
+                    if (view.byteLength < 244) return; // Error guard
+
+                    // 1. Seq
+                    const seq = view.getUint8(0);
                     if(lastSeq !== -1) {
                         let expected = (lastSeq + 1) & 0xFF;
                         const ind = document.getElementById('lossIndicator');
@@ -366,68 +376,59 @@
                             ind.innerText = `Loss! jump ${lastSeq}->${seq}`; 
                             ind.style.color = "var(--danger)";
                         } else {
-                            ind.innerText = "Active (TLV)";
+                            ind.innerText = "Active (Struct)";
                             ind.style.color = "var(--success)";
                         }
                     }
                     lastSeq = seq;
                     
-                    const timeFlag = view.getUint8(offset++);
-                    if(timeFlag === 1 && (offset + 4) <= view.byteLength) {
-                        offset += 4; // Ignore timestamp for now
+                    // 2. Timestamp (If needed, you can extract: view.getUint32(1, false))
+
+                    // 3. Mic Data [5 -> 165]
+                    const mLen = view.getUint8(5);
+                    const mOffset = 6;
+                    if (mLen > 0 && mLen <= 160) {
+                        for(let i=0; i<mLen; i+=2) {
+                            const sample = view.getInt16(mOffset+i, true);
+                            micWaveBuf[micWaveIdx++] = sample;
+                            micHistory[micHistIdx++] = sample;
+                            if(micHistIdx >= micHistory.length) micHistIdx = 0; 
+                            if(micWaveIdx >= MIC_SAMPLES_DISPLAY) {
+                                micWaveBuf.copyWithin(0, MIC_SAMPLES_DISPLAY/2);
+                                micWaveIdx = MIC_SAMPLES_DISPLAY/2;
+                            }
+                        }
+                        micUpdatePending = true;
                     }
 
-                    while(offset < view.byteLength) {
-                        if (offset + 2 > view.byteLength) break; 
-                        const tag = String.fromCharCode(view.getUint8(offset++));
-                        const len = view.getUint8(offset++);
+                    // 4. Thermal Data [166 -> 230]
+                    const fLen = view.getUint8(166);
+                    const fOffset = 167;
+                    if (fLen > 0 && fLen <= 64) {
+                        for(let i=0; i<fLen; i+=2) {
+                            const rawVal = view.getInt16(fOffset+i, false);
+                            thermalData[thermalIdx++] = rawVal / 50.0;
+                            if (thermalIdx >= 768) {
+                                thermalIdx = 0;
+                                thermalUpdated = true;
+                            }
+                        }
+                    }
+
+                    // 5. IMU Data [231 -> 243]
+                    const iLen = view.getUint8(231);
+                    const iOffset = 232;
+                    if (iLen === 12) {
+                        const ax = view.getInt16(iOffset, true); const ay = view.getInt16(iOffset+2, true); const az = view.getInt16(iOffset+4, true);
+                        const gx = view.getInt16(iOffset+6, true); const gy = view.getInt16(iOffset+8, true); const gz = view.getInt16(iOffset+10, true);
                         
-                        // Safety bounds
-                        if (offset + len > view.byteLength) break;
-
-                        if (tag === 'M') {
-                            for(let i=0; i<len; i+=2) {
-                                // Little Endian Mic data mapped from Wentao.ino [push(L), push(M)]
-                                const sample = view.getInt16(offset+i, true);
-                                micWaveBuf[micWaveIdx++] = sample;
-                                micHistory[micHistIdx++] = sample;
-                                if(micHistIdx >= micHistory.length) micHistIdx = 0; // wrapping history
-
-                                if(micWaveIdx >= MIC_SAMPLES_DISPLAY) {
-                                    // Shift array smoothly by half exactly like an oscilloscope
-                                    micWaveBuf.copyWithin(0, MIC_SAMPLES_DISPLAY/2);
-                                    micWaveIdx = MIC_SAMPLES_DISPLAY/2;
-                                }
-                            }
-                            micUpdatePending = true;
-                        } 
-                        else if (tag === 'F') {
-                            for(let i=0; i<len; i+=2) {
-                                // Big Endian mapped from MLX I2C Wire [Wire.read(MSB), Wire.read(LSB)]
-                                const rawVal = view.getInt16(offset+i, false);
-                                thermalData[thermalIdx++] = rawVal / 50.0;
-                                if (thermalIdx >= 768) {
-                                    thermalIdx = 0;
-                                    thermalUpdated = true;
-                                }
-                            }
-                        }
-                        else if (tag === 'I') {
-                            if (len >= 12) {
-                                // Little Endian structs passed as byte array
-                                const ax = view.getInt16(offset, true); const ay = view.getInt16(offset+2, true); const az = view.getInt16(offset+4, true);
-                                const gx = view.getInt16(offset+6, true); const gy = view.getInt16(offset+8, true); const gz = view.getInt16(offset+10, true);
-                                
-                                const af = 2.0 / 32768.0; const gf = 2000.0 / 32768.0;
-                                imuData[0].push(ax*af); imuData[0].shift(); imuData[1].push(ay*af); imuData[1].shift(); imuData[2].push(az*af); imuData[2].shift();
-                                imuData[3].push(gx*gf); imuData[3].shift(); imuData[4].push(gy*gf); imuData[4].shift(); imuData[5].push(gz*gf); imuData[5].shift();
-                                
-                                filter.update(gx*Math.PI/180, gy*Math.PI/180, gz*Math.PI/180, ax, ay, az);
-                                pcbGroup.quaternion.set(filter.q1, filter.q2, filter.q3, filter.q0);
-                                imuUpdatePending = true;
-                            }
-                        }
-                        offset += len;
+                        const af = 2.0 / 32768.0; const gf = 2000.0 / 32768.0;
+                        imuData[0].push(ax*af); imuData[0].shift(); imuData[1].push(ay*af); imuData[1].shift(); imuData[2].push(az*af); imuData[2].shift();
+                        imuData[3].push(gx*gf); imuData[3].shift(); imuData[4].push(gy*gf); imuData[4].shift(); imuData[5].push(gz*gf); imuData[5].shift();
+                        
+                        filter.update(gx*Math.PI/180, gy*Math.PI/180, gz*Math.PI/180, ax, ay, az);
+                        pcbGroup.quaternion.set(filter.q1, filter.q2, filter.q3, filter.q0);
+                        imuUpdatePending = true;
                     }
                 });
 

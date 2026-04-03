@@ -1,4 +1,4 @@
-// Last Update Time: 2026-04-03 16:45
+// Last Update Time: 2026-04-03 16:50
 #include <LSM6DS3.h>
 #include <PDM.h>
 #include <Wire.h>
@@ -51,11 +51,12 @@ public:
   }
 };
 
-RingBuf<uint8_t, 4096> micBuf;
-RingBuf<uint8_t, 2048> thermalBuf;
-RingBuf<uint8_t, 256> imuBuf;
+// 缓冲池扩容与评估论证
+RingBuf<uint8_t, 4096> micBuf; // 16kHz*2B=32KB/s。5ms需160B。4096B足以支撑连续 125ms 的蓝牙阻塞不丢数。
+RingBuf<uint8_t, 2048> thermalBuf; // 8Hz帧(1536B)。2048B可完全缓存1帧完整堆积。
+RingBuf<uint8_t, 256> imuBuf; // 每10ms生产12B(1.2KB/s)。256B可支撑 200ms 的阻塞积压。
 
-short sampleBuffer[512]; // Buffer for PDM library
+short sampleBuffer[512]; // PDM library DMA Cache
 
 unsigned long lastPackTime = 0;
 unsigned long lastMlxReadTime = 0;
@@ -97,7 +98,7 @@ public:
       int req = Wire.requestFrom((uint8_t)MLX90642_I2C_ADDR, (uint8_t)2);
       if (req != 2 || Wire.available() < 2) return false;
 
-      // 推入环形缓冲区 (MSB先推, LSB后推)
+      // 推入环形缓冲区
       thermalBuf.push(Wire.read());
       thermalBuf.push(Wire.read());
     }
@@ -135,11 +136,9 @@ void onPDMdata() {
   int bytesAvailable = PDM.available();
   PDM.read(sampleBuffer, bytesAvailable);
   if (!isRecording || !recMic) return;
-  // 直接以 Byte 的形式喂进 micBuf
   int samples = bytesAvailable / 2;
   for (int i = 0; i < samples; i++) {
     int16_t s = sampleBuffer[i];
-    // 转为小端序存放，前端读取 Int16Array 方便
     micBuf.push((uint8_t)(s & 0xFF));
     micBuf.push((uint8_t)(s >> 8));
   }
@@ -147,7 +146,6 @@ void onPDMdata() {
 
 void prph_connect_callback(uint16_t conn_handle) { 
   pendingStatusReport = true; 
-  // 协商全速 2M PHY 和 247 MTU
   BLEConnection* conn = Bluefruit.Connection(conn_handle);
   if (conn) {
     conn->requestPHY();
@@ -157,7 +155,6 @@ void prph_connect_callback(uint16_t conn_handle) {
 }
 
 void sendSystemStatus() {
-  // 我们保留 ASCII 发送给系统状态
   bleuart.println("\n=== System Status ===");
   bleuart.printf("IMU: %s | Addr: 0x6A | Acc: 2g | Gyro: 2000dps\n", imuOnline ? "OK" : "ERR");
   bleuart.printf("MIC: %s | Internal | Rate: 16kHz\n", micOnline ? "OK" : "ERR");
@@ -173,7 +170,7 @@ void processCommand(String cmd) {
       recAcc = (cmd.charAt(12) == '1');
       recIr  = (cmd.charAt(14) == '1');
       isRecording = true;
-      bleuart.println("SYS: Recording STARTED (TLV).");
+      bleuart.println("SYS: Recording STARTED (Fixed Struct TLV).");
     }
   } else if (cmd == "STOP_REC" || cmd == "S" || cmd == "s") {
     isRecording = false;
@@ -235,8 +232,6 @@ void loop() {
   if (isRecording) {
     unsigned long now = millis();
 
-    // =============== 生产端 (Producers) ===============
-    // 1. 每 5ms 抓一行 MLX 并入队 (耗时 ~2ms)
     if (recIr && mlxOnline && (now - lastMlxReadTime >= 5)) {
       lastMlxReadTime = now;
       thermalCollector.readRowToBuf(currentMlxRow);
@@ -244,7 +239,6 @@ void loop() {
       if (currentMlxRow >= 24) currentMlxRow = 0;
     }
 
-    // 2. 每 10ms 抓一帧 IMU 并入队 (耗时极低)
     if (recAcc && imuOnline && (now - lastImuTime >= 10)) {
       lastImuTime = now;
       int16_t ax = myIMU.readRawAccelX();
@@ -259,68 +253,55 @@ void loop() {
       for(int i=0; i<12; i++) imuBuf.push(bytePtr[i]);
     }
 
-    // Mic 数据由底层 DMA 硬件在 onPDMdata 内自动生产...
-
-    // =============== 消费端 (Consumer) ===============
-    // 3. 严格 5ms 打包发送 TLV
+    // 严苛定长定偏移打包 (Fixed Padding Struct)
     if (now - lastPackTime >= 5) {
-      // 用 244 byte 做 payload buffer
-      uint8_t txBuf[247]; 
-      int len = 0;
-      bool isFullSec = (now % 1000 < 5) && (now - lastPackTime > 500); 
       lastPackTime = now;
 
-      txBuf[len++] = packetSeq++; // Seq byte
-      txBuf[len++] = isFullSec ? 0x01 : 0x00; // Time Flag
-      if (isFullSec) {
-        txBuf[len++] = (now >> 24) & 0xFF;
-        txBuf[len++] = (now >> 16) & 0xFF;
-        txBuf[len++] = (now >> 8) & 0xFF;
-        txBuf[len++] = now & 0xFF;
-      }
+      // 固定创建 244 字节的缓冲区并默认全部初始化为 0 (满足默认为 0 的需求)
+      uint8_t txBuf[244] = {0}; 
+      
+      // ---------- Header & Time ----------
+      // [Byte 0] Seq
+      txBuf[0] = packetSeq++; 
+      // [Byte 1-4] Timestamp (Big Endian 保护时序)
+      txBuf[1] = (now >> 24) & 0xFF;
+      txBuf[2] = (now >> 16) & 0xFF;
+      txBuf[3] = (now >> 8) & 0xFF;
+      txBuf[4] = now & 0xFF;
 
-      // 提取 M: Mic 数据 (最高抽 160 Bytes)
+      // ---------- Mic Data (Byte 5~165) ----------
       uint16_t mAvail = micBuf.available();
       if (mAvail > 160) mAvail = 160;
-      // 保证只能抽取出偶数个字节(完整int16)
-      mAvail = mAvail & ~1;
-      if (mAvail > 0) {
-        txBuf[len++] = 'M';
-        txBuf[len++] = (uint8_t)mAvail;
-        for(uint16_t i=0; i<mAvail; i++) {
-          micBuf.pop(txBuf[len++]);
-        }
+      mAvail = mAvail & ~1; // 仅限偶数
+      
+      txBuf[5] = (uint8_t)mAvail; // Valid Length
+      for(uint16_t i=0; i<mAvail; i++) {
+        micBuf.pop(txBuf[6 + i]);
       }
+      // 如果 mAvail < 160，剩下的因为数组初始化过了自然全是 0 
 
-      // 提取 F: 热成像数据 (最高抽 64 Bytes, 即1行)
+      // ---------- Thermal Data (Byte 166~230) ----------
       uint16_t fAvail = thermalBuf.available();
       if (fAvail > 64) fAvail = 64;
-      // 保证整组双字节出入
-      fAvail = fAvail & ~1;
-      if (fAvail > 0) {
-        txBuf[len++] = 'F';
-        txBuf[len++] = (uint8_t)fAvail;
-        for(uint16_t i=0; i<fAvail; i++) {
-          thermalBuf.pop(txBuf[len++]);
-        }
+      fAvail = fAvail & ~1; // 仅限偶数
+      
+      txBuf[166] = (uint8_t)fAvail; // Valid Length
+      for(uint16_t i=0; i<fAvail; i++) {
+        thermalBuf.pop(txBuf[167 + i]);
       }
 
-      // 提取 I: IMU 数据 (最高抽 12 Bytes)
+      // ---------- IMU Data (Byte 231~243) ----------
       uint16_t iAvail = imuBuf.available();
-      if (iAvail >= 12) iAvail = 12; // 强行对齐12
+      if (iAvail >= 12) iAvail = 12;
       else iAvail = 0;
-      if (iAvail > 0) {
-        txBuf[len++] = 'I';
-        txBuf[len++] = (uint8_t)iAvail;
-        for(uint16_t i=0; i<iAvail; i++) {
-          imuBuf.pop(txBuf[len++]);
-        }
+      
+      txBuf[231] = (uint8_t)iAvail; // Valid Length
+      for(uint16_t i=0; i<iAvail; i++) {
+        imuBuf.pop(txBuf[232 + i]);
       }
 
-      // 只在有数据时发送
-      if (len > 2) {
-        bleuart.write(txBuf, len);
-      }
+      // 一次性推送最高额 244 字节（如果接收端支持DLE）
+      bleuart.write(txBuf, 244);
     }
   }
 }
