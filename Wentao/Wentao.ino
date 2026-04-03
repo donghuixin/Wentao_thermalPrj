@@ -76,7 +76,7 @@ class ThermalDataCollector {
 public:
   bool begin() {
     Wire.begin();
-    Wire.setClock(100000);
+    Wire.setClock(1000000); // 提升到 1MHz Fast Mode Plus 降低阻塞
     uint16_t config = readRegister(MLX90642_CONFIG_ADDR);
     if (config == 0 || config == 0xFFFF) return false;
     config &= ~0x0007;
@@ -86,22 +86,24 @@ public:
   }
 
   bool readRowToBuf(int r) {
-    for (int c = 0; c < 32; c++) {
-      uint16_t pxl_idx = r * 32 + c;
-      uint16_t startAddress = MLX90642_RAM_START + pxl_idx * 2; 
-
+    uint16_t startPxlIdx = r * 32;
+    // 將 32 像素 (64 bytes) 分為兩次 16 像素 (32 bytes) 的連續讀取，以適應 Arduino 一般 32 字節的 Wire 緩衝區限制
+    for (int chunk = 0; chunk < 2; chunk++) {
+      uint16_t startAddress = MLX90642_RAM_START + (startPxlIdx + chunk * 16) * 2;
+      
       Wire.beginTransmission(MLX90642_I2C_ADDR);
       Wire.write(startAddress >> 8);
       Wire.write(startAddress & 0xFF);
-      
       if (Wire.endTransmission(false) != 0) return false;
 
-      int req = Wire.requestFrom((uint8_t)MLX90642_I2C_ADDR, (uint8_t)2);
-      if (req != 2 || Wire.available() < 2) return false;
+      int req = Wire.requestFrom((uint8_t)MLX90642_I2C_ADDR, (uint8_t)32);
+      if (req != 32 || Wire.available() < 32) return false;
 
-      // 推入环形缓冲区
-      thermalBuf.push(Wire.read());
-      thermalBuf.push(Wire.read());
+      // 連續推入環形緩衝區
+      for (int i = 0; i < 16; i++) {
+        thermalBuf.push(Wire.read());
+        thermalBuf.push(Wire.read());
+      }
     }
     return true;
   }
