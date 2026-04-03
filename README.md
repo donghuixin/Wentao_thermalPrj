@@ -2,6 +2,27 @@
 
 A BLE-based multi-sensor data collection system built around the **Seeed XIAO nRF52840 (Sense) Plus** board. The firmware collects data from an IMU, microphone, and thermal IR sensor, and streams it over Bluetooth to a browser-based dashboard for real-time visualization, analysis, and CSV export.
 
+## Latest Updates (2026-04-03)
+
+1. **High-rate link diagnostics added**
+   - Firmware now reports negotiated BLE link parameters after connection:
+   - `PHY`, `Connection Interval`, `MTU`, `Data Length`
+   - TX runtime stats: sent / skipped / failed packets and write-latency metrics.
+
+2. **IMU transmission de-duplication for 100Hz mode**
+   - IMU sampling is set to **100Hz** while packet transport remains high-rate.
+   - Device sends IMU payload only when a **new IMU sample** is available.
+   - If no new sample is available in that packet slot, `IMU Valid Len` is set to `0` (no zero-filling).
+   - Web dashboard keeps orientation continuity by holding the last valid IMU frame (`HOLD` state in log).
+
+3. **Buffer policy aligned to thermal 2-frame window**
+   - Thermal buffer kept at about 2 full frames.
+   - Mic and IMU buffering adjusted to match practical anti-jitter windows, avoiding unnecessary long queue delay.
+
+4. **Dashboard usability updates**
+   - IMU and Mic charts now use adaptive y-axis range.
+   - CSV export remains raw-value oriented for offline analysis.
+
 ## Project Structure
 
 ```
@@ -64,8 +85,8 @@ This strict layout allows any external parser (e.g. C#, Python, MATLAB) to unpac
 | `[6-165]` | 160 | **Mic Payload** | `int16_t[80]` (Little-Endian) | The raw PCM Audio array. If purely valid data occupies `V` bytes (`V <= 160`), the remainder `160 - V` bytes are explicitly zero-padded `0x00`. |
 | `[166]` | 1 | **Thermal Valid Len** | `uint8_t` | Identifies valid Thermal frame length. Standard size is 64 Bytes (single row of 32 pixels). If 0, no data is available. |
 | `[167-230]` | 64 | **Thermal Payload** | `int16_t[32]` (**Big-Endian**) | Heat signature block representing exactly 1 row (32 pixels). Bypasses memory layout conversion and injects directly from I2C reading (hence Big Endian). Trailing layout space explicitly zeros if `Len == 0`. |
-| `[231]` | 1 | **IMU Valid Len** | `uint8_t` | Identifies valid IMU data length. Strict values are `12` or `0`. |
-| `[232-243]` | 12 | **IMU Payload** | `int16_t[6]` (Little-Endian) | Struct layout representing exactly: `[Ax, Ay, Az, Gx, Gy, Gz]`. Trailing space explicitly zeros if `Len == 0`. |
+| `[231]` | 1 | **IMU Valid Len** | `uint8_t` | IMU de-dup mode: `12` = new IMU sample in this packet, `0` = no new IMU sample in this packet slot. |
+| `[232-243]` | 12 | **IMU Payload** | `int16_t[6]` (Little-Endian) | Struct layout: `[Ax, Ay, Az, Gx, Gy, Gz]` when `Len == 12`. When `Len == 0`, receiver should keep the last valid IMU state for display continuity. |
 
 ### Architectural Features
 
@@ -86,7 +107,7 @@ A single-page HTML dashboard that connects to the sensor board via **Web Bluetoo
 |---|---|
 | **IMU 6-Axis Realtime** | ECharts line chart showing accelerometer (X/Y/Z) and gyroscope (X/Y/Z) data in real time |
 | **Microphone Waveform** | ECharts bar chart displaying live audio amplitude |
-| **Thermal Heatmap (8×8)** | Canvas-rendered color heatmap (blue → red, 15 °C – 40 °C range) |
+| **Thermal Heatmap (32×24)** | Canvas-rendered color heatmap (blue → red, 15 °C – 40 °C range) |
 | **3D Board Posture** | Three.js scene showing a PCB model whose orientation tracks IMU data via Mahony AHRS filter |
 | **Live Data Stream** | Scrolling terminal log of all TX/RX messages with timestamps |
 

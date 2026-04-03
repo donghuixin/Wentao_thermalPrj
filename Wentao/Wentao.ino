@@ -1,4 +1,4 @@
-// Last Update Time: 2026-04-03 16:50
+// Last Update Time: 2026-04-03 13:20
 #include <LSM6DS3.h>
 #include <PDM.h>
 #include <Wire.h>
@@ -19,6 +19,9 @@ bool recAcc = false;
 bool recIr = false;
 
 bool pendingStatusReport = false;
+bool pendingLinkDiagReport = false;
+uint8_t pendingLinkDiagCount = 0;
+unsigned long lastLinkDiagMs = 0;
 
 // ===================== Ring Buffer Template =====================
 template <typename T, uint16_t N>
@@ -52,18 +55,37 @@ public:
 };
 
 // 缓冲池扩容与评估论证
-RingBuf<uint8_t, 4096> micBuf; // 16kHz*2B=32KB/s。5ms需160B。4096B足以支撑连续 125ms 的蓝牙阻塞不丢数。
-RingBuf<uint8_t, 8192> thermalBuf; // 提升到 8192B，可缓存至少 5 帧完整的红外数据图。
-RingBuf<uint8_t, 256> imuBuf; // 每10ms生产12B(1.2KB/s)。256B可支撑 200ms 的阻塞积压。
+RingBuf<uint8_t, 8192> micBuf; // 约250ms窗口（与2帧红外时间尺度一致）：160B*50包≈8000B。
+RingBuf<uint8_t, 3072> thermalBuf; // 约可缓存 2 帧红外图，平衡 RAM 占用与抗抖动能力。
+RingBuf<uint8_t, 512> imuBuf; // 100Hz时每10ms产12B，512B可覆盖约420ms抖动。
 
 short sampleBuffer[512]; // PDM library DMA Cache
 
 unsigned long lastPackTime = 0;
 unsigned long lastMlxReadTime = 0;
 unsigned long lastImuTime = 0;
+uint32_t nextPackUs = 0;
+uint32_t nextImuUs = 0;
+uint32_t nextMlxUs = 0;
+const uint32_t PACK_PERIOD_US = 5000; // 200Hz
+const uint32_t IMU_PERIOD_US = 10000; // 100Hz
+const uint32_t MLX_PERIOD_US = 2000;  // up to 500Hz row prefetch
+
+uint8_t lastImuPacket[12] = {0};
+bool hasLastImuPacket = false;
+bool imuSampleFresh = false;
 int currentMlxRow = 0;
 int currentMlxRowOut = 0;
 uint8_t packetSeq = 0;
+uint32_t nextTxUs = 0;
+uint32_t txBackoffUs = 0;
+
+uint32_t txSentCount = 0;
+uint32_t txSkipNoCreditCount = 0;
+uint32_t txWriteFailCount = 0;
+uint32_t txWriteCount = 0;
+uint32_t txWriteTotalUs = 0;
+uint32_t txWriteMaxUs = 0;
 
 // ===================== MLX90642 =====================
 #define MLX90642_I2C_ADDR 0x66
@@ -86,6 +108,7 @@ public:
   }
 
   bool readRowToBuf(int r) {
+    Wire.setClock(1000000);
     uint16_t startPxlIdx = r * 32;
     // 將 32 像素 (64 bytes) 分為兩次 16 像素 (32 bytes) 的連續讀取，以適應 Arduino 一般 32 字節的 Wire 緩衝區限制
     for (int chunk = 0; chunk < 2; chunk++) {
@@ -134,6 +157,35 @@ private:
 };
 ThermalDataCollector thermalCollector;
 
+static const char* phyToStr(uint8_t phy) {
+  if (phy == BLE_GAP_PHY_2MBPS) return "2M";
+  if (phy == BLE_GAP_PHY_1MBPS) return "1M";
+  if (phy == BLE_GAP_PHY_CODED) return "CODED";
+  return "AUTO/UNK";
+}
+
+void sendLinkDiagnostics(void) {
+  uint16_t conn_hdl = Bluefruit.connHandle();
+  BLEConnection* conn = Bluefruit.Connection(conn_hdl);
+  if (!conn || !bleuart.notifyEnabled(conn_hdl)) return;
+
+  float ci_ms = conn->getConnectionInterval() * 1.25f;
+  bleuart.printf("LINK: PHY=%s | CI=%.2fms | MTU=%u | DLE=%u\n",
+                 phyToStr(conn->getPHY()),
+                 ci_ms,
+                 conn->getMtu(),
+                 conn->getDataLength());
+  bleuart.printf("TX: sent=%lu skipNoCredit=%lu fail=%lu\n",
+                 txSentCount,
+                 txSkipNoCreditCount,
+                 txWriteFailCount);
+  uint32_t avgWriteUs = txWriteCount ? (txWriteTotalUs / txWriteCount) : 0;
+  bleuart.printf("TX_LAT: avg=%luus max=%luus backoff=%luus\n",
+                 avgWriteUs,
+                 txWriteMaxUs,
+                 txBackoffUs);
+}
+
 // ===================== Interrupts & Callbacks =====================
 void onPDMdata() {
   int bytesAvailable = PDM.available();
@@ -149,6 +201,9 @@ void onPDMdata() {
 
 void prph_connect_callback(uint16_t conn_handle) { 
   pendingStatusReport = true; 
+  pendingLinkDiagReport = true;
+  pendingLinkDiagCount = 8; // 连接后连续报告几次，观察参数协商是否成功
+  lastLinkDiagMs = 0;
   BLEConnection* conn = Bluefruit.Connection(conn_handle);
   if (conn) {
     conn->requestPHY();
@@ -176,6 +231,12 @@ void processCommand(String cmd) {
       recAcc = (cmd.charAt(12) == '1');
       recIr  = (cmd.charAt(14) == '1');
       isRecording = true;
+      uint32_t nowUs = micros();
+      nextPackUs = nowUs + PACK_PERIOD_US;
+      nextImuUs = nowUs + IMU_PERIOD_US;
+      nextMlxUs = nowUs + MLX_PERIOD_US;
+      nextTxUs = nowUs;
+      txBackoffUs = 0;
       bleuart.println("SYS: Recording STARTED (Fixed Struct TLV).");
     }
   } else if (cmd == "STOP_REC" || cmd == "S" || cmd == "s") {
@@ -208,6 +269,7 @@ void setup() {
   Bluefruit.setTxPower(4);
   Bluefruit.setName(DEVICE_NAME);
   Bluefruit.Periph.setConnectCallback(prph_connect_callback);
+  Bluefruit.Periph.setConnInterval(6, 6); // 优先请求最短 7.5ms
 
   bleuart.begin();
   Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
@@ -239,12 +301,22 @@ void loop() {
   checkIncomingData();
 
   if (isRecording) {
+    uint32_t nowUs = micros();
     unsigned long now = millis();
+
+    if (pendingLinkDiagReport && bleuart.notifyEnabled() && (now - lastLinkDiagMs >= 500)) {
+      lastLinkDiagMs = now;
+      sendLinkDiagnostics();
+      if (pendingLinkDiagCount > 0) pendingLinkDiagCount--;
+      if (pendingLinkDiagCount == 0) pendingLinkDiagReport = false;
+    }
 
     // 只要距离上次读取大于 2ms 且缓冲池有一行 (64B) 以上空余量，就提早并发读取下一行
     // 避免 5ms 的死板卡点导致来不急填满缓冲区
-    if (recIr && mlxOnline && (now - lastMlxReadTime >= 2)) {
-      if (thermalBuf.available() < (8192 - 64)) {
+    if (recIr && mlxOnline && (int32_t)(nowUs - nextMlxUs) >= 0) {
+      nextMlxUs += MLX_PERIOD_US;
+      if ((int32_t)(nowUs - nextMlxUs) > (int32_t)(MLX_PERIOD_US * 2)) nextMlxUs = nowUs + MLX_PERIOD_US;
+      if (thermalBuf.available() < (3072 - 64)) {
         lastMlxReadTime = now;
         thermalCollector.readRowToBuf(currentMlxRow);
         currentMlxRow++;
@@ -252,28 +324,32 @@ void loop() {
       }
     }
 
-    // 將 IMU 讀取頻率提升到 5ms (200Hz)，與藍牙發送管線對齊，避免交錯丟包漏看
-    if (recAcc && imuOnline && (now - lastImuTime >= 5)) {
+    // 保持 IMU 200Hz；优先使用库函数确保稳定出数，避免低层 burst 在不同核心版本下偶发失败
+    if (recAcc && imuOnline && (int32_t)(nowUs - nextImuUs) >= 0) {
+      nextImuUs += IMU_PERIOD_US;
+      if ((int32_t)(nowUs - nextImuUs) > (int32_t)(IMU_PERIOD_US * 2)) nextImuUs = nowUs + IMU_PERIOD_US;
       lastImuTime = now;
-      // Burst read IMU Data (12 bytes starting from 0x22 OUTX_L_G)
-      Wire.beginTransmission(0x6A);
-      Wire.write(0x22);
-      if (Wire.endTransmission(false) == 0 && Wire.requestFrom((uint8_t)0x6A, (uint8_t)12) == 12) {
-        int16_t gx = Wire.read() | (Wire.read() << 8);
-        int16_t gy = Wire.read() | (Wire.read() << 8);
-        int16_t gz = Wire.read() | (Wire.read() << 8);
-        int16_t ax = Wire.read() | (Wire.read() << 8);
-        int16_t ay = Wire.read() | (Wire.read() << 8);
-        int16_t az = Wire.read() | (Wire.read() << 8);
-        
-        int16_t imuData[6] = {ax, ay, az, gx, gy, gz};
-        uint8_t* bytePtr = (uint8_t*)imuData;
-        for(int i=0; i<12; i++) imuBuf.push(bytePtr[i]);
+      int16_t ax = myIMU.readRawAccelX();
+      int16_t ay = myIMU.readRawAccelY();
+      int16_t az = myIMU.readRawAccelZ();
+      int16_t gx = myIMU.readRawGyroX();
+      int16_t gy = myIMU.readRawGyroY();
+      int16_t gz = myIMU.readRawGyroZ();
+
+      int16_t imuData[6] = {ax, ay, az, gx, gy, gz};
+      uint8_t* bytePtr = (uint8_t*)imuData;
+      for(int i=0; i<12; i++) {
+        imuBuf.push(bytePtr[i]);
+        lastImuPacket[i] = bytePtr[i];
       }
+      hasLastImuPacket = true;
+      imuSampleFresh = true;
     }
 
     // 严苛定长定偏移打包 (Fixed Padding Struct)
-    if (now - lastPackTime >= 5) {
+    if ((int32_t)(nowUs - nextPackUs) >= 0) {
+      nextPackUs += PACK_PERIOD_US;
+      if ((int32_t)(nowUs - nextPackUs) > (int32_t)(PACK_PERIOD_US * 2)) nextPackUs = nowUs + PACK_PERIOD_US;
       lastPackTime = now;
 
       // 固定创建 244 字节的缓冲区并默认全部初始化为 0 (满足默认为 0 的需求)
@@ -317,17 +393,55 @@ void loop() {
       }
 
       // ---------- IMU Data (Byte 231~243) ----------
+      // 仅在有新样本时发送一次，避免 100Hz 采样在 200Hz 包率下重复发送同一帧。
       uint16_t iAvail = imuBuf.available();
-      if (iAvail >= 12) iAvail = 12;
-      else iAvail = 0;
-      
-      txBuf[231] = (uint8_t)iAvail; // Valid Length
-      for(uint16_t i=0; i<iAvail; i++) {
-        imuBuf.pop(txBuf[232 + i]);
+      if (iAvail >= 12) {
+        while (imuBuf.available() >= 12) {
+          for (uint16_t i = 0; i < 12; i++) {
+            imuBuf.pop(lastImuPacket[i]);
+          }
+          hasLastImuPacket = true;
+          imuSampleFresh = true;
+        }
       }
 
-      // 一次性推送最高额 244 字节（如果接收端支持DLE）
-      bleuart.write(txBuf, 244);
+      if (hasLastImuPacket && imuSampleFresh) {
+        txBuf[231] = 12;
+        for (uint16_t i = 0; i < 12; i++) {
+          txBuf[232 + i] = lastImuPacket[i];
+        }
+        imuSampleFresh = false;
+      } else {
+        txBuf[231] = 0;
+      }
+
+      // 自适应节流：在当前 core 无可用 TX-credit API 的情况下，用写入耗时反馈避免持续阻塞
+      uint16_t conn_hdl = Bluefruit.connHandle();
+      if (conn_hdl == BLE_CONN_HANDLE_INVALID || !bleuart.notifyEnabled(conn_hdl)) {
+        txSkipNoCreditCount++;
+      } else if ((int32_t)(nowUs - nextTxUs) < 0) {
+        txSkipNoCreditCount++;
+      } else {
+        uint32_t t0 = micros();
+        size_t written = bleuart.write(conn_hdl, txBuf, 244);
+        uint32_t dt = micros() - t0;
+        txWriteCount++;
+        txWriteTotalUs += dt;
+        if (dt > txWriteMaxUs) txWriteMaxUs = dt;
+
+        if (written == 244) txSentCount++;
+        else txWriteFailCount++;
+
+        // 写入越慢，说明中央/链路越接近饱和，增加退避减少主循环被阻塞概率
+        if (dt > 1800) {
+          if (txBackoffUs < 3000) txBackoffUs += 200;
+        } else if (dt < 600) {
+          if (txBackoffUs >= 100) txBackoffUs -= 100;
+          else txBackoffUs = 0;
+        }
+
+        nextTxUs = nowUs + txBackoffUs;
+      }
     }
   }
 }

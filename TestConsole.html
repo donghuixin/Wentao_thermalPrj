@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
-<!-- Last Update Time: 2026-04-03 17:05 -->
+<!-- Last Update Time: 2026-04-03 12:05 -->
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -304,9 +304,30 @@
             }]
         });
 
+        function calcAdaptiveRange(arr, minSpan = 0.1, padRatio = 0.15) {
+            let minV = Infinity;
+            let maxV = -Infinity;
+            for (const v of arr) {
+                if (typeof v !== 'number' || Number.isNaN(v)) continue;
+                if (v < minV) minV = v;
+                if (v > maxV) maxV = v;
+            }
+            if (!Number.isFinite(minV) || !Number.isFinite(maxV)) return { min: 0, max: 1 };
+            let span = maxV - minV;
+            if (span < minSpan) {
+                const mid = (maxV + minV) * 0.5;
+                minV = mid - minSpan * 0.5;
+                maxV = mid + minSpan * 0.5;
+                span = minSpan;
+            }
+            const pad = span * padRatio;
+            return { min: minV - pad, max: maxV + pad };
+        }
+
         let imuUpdatePending = false;
         let micUpdatePending = false;
         let thermalUpdated = false;
+        let lastImuDisplay = null;
 
         const thermalCanvas = document.getElementById('thermalCanvas');
         const thermalCtx = thermalCanvas.getContext('2d');
@@ -466,7 +487,7 @@
                     const iOffset = 232;
                     csvLine += `,${iLen}`;
                     let imuRawArr = ["","","","","",""];
-                    let imuLogData = "Null";
+                    let imuLogData = "Hold";
                     if (iLen === 12) {
                         const ax = view.getInt16(iOffset, true); const ay = view.getInt16(iOffset+2, true); const az = view.getInt16(iOffset+4, true);
                         const gx = view.getInt16(iOffset+6, true); const gy = view.getInt16(iOffset+8, true); const gz = view.getInt16(iOffset+10, true);
@@ -478,6 +499,8 @@
                         const fax = ax*af; const fay = ay*af; const faz = az*af; 
                         const fgx = gx*gf; const fgy = gy*gf; const fgz = gz*gf;
 
+                        lastImuDisplay = { fax, fay, faz, fgx, fgy, fgz };
+
                         imuData[0].push(fax); imuData[0].shift(); imuData[1].push(fay); imuData[1].shift(); imuData[2].push(faz); imuData[2].shift();
                         imuData[3].push(fgx); imuData[3].shift(); imuData[4].push(fgy); imuData[4].shift(); imuData[5].push(fgz); imuData[5].shift();
                         
@@ -486,6 +509,17 @@
                         imuUpdatePending = true;
 
                         imuLogData = `A[${fax.toFixed(2)},${fay.toFixed(2)},${faz.toFixed(2)}] G[${fgx.toFixed(2)},${fgy.toFixed(2)},${fgz.toFixed(2)}]`;
+                    } else if (lastImuDisplay) {
+                        const { fax, fay, faz, fgx, fgy, fgz } = lastImuDisplay;
+
+                        imuData[0].push(fax); imuData[0].shift(); imuData[1].push(fay); imuData[1].shift(); imuData[2].push(faz); imuData[2].shift();
+                        imuData[3].push(fgx); imuData[3].shift(); imuData[4].push(fgy); imuData[4].shift(); imuData[5].push(fgz); imuData[5].shift();
+                        
+                        filter.update(fgx*Math.PI/180, fgy*Math.PI/180, fgz*Math.PI/180, fax, fay, faz);
+                        pcbGroup.quaternion.set(filter.q1, filter.q2, filter.q3, filter.q0);
+                        imuUpdatePending = true;
+
+                        imuLogData = `HOLD A[${fax.toFixed(2)},${fay.toFixed(2)},${faz.toFixed(2)}] G[${fgx.toFixed(2)},${fgy.toFixed(2)},${fgz.toFixed(2)}]`;
                     }
                     csvLine += `,${imuRawArr.join(',')}`;
 
@@ -642,8 +676,26 @@
             renderer.render(scene, camera);
 
             // Throttle UI charts to remain responsive
-            if (imuUpdatePending) { imuChart.setOption({ series: imuData.map(d => ({ data: d })) }); imuUpdatePending = false; }
-            if (micUpdatePending) { micChart.setOption({ series: [{ data: micData }] }); micUpdatePending = false; }
+            if (imuUpdatePending) {
+                const accRange = calcAdaptiveRange([].concat(imuData[0], imuData[1], imuData[2]), 0.2, 0.12);
+                const gyrRange = calcAdaptiveRange([].concat(imuData[3], imuData[4], imuData[5]), 10, 0.12);
+                imuChart.setOption({
+                    yAxis: [
+                        { min: accRange.min, max: accRange.max },
+                        { min: gyrRange.min, max: gyrRange.max }
+                    ],
+                    series: imuData.map(d => ({ data: d }))
+                });
+                imuUpdatePending = false;
+            }
+            if (micUpdatePending) {
+                const micRange = calcAdaptiveRange(micData, 0.03, 0.2);
+                micChart.setOption({
+                    yAxis: { min: Math.max(0, micRange.min), max: Math.max(0.05, micRange.max) },
+                    series: [{ data: micData }]
+                });
+                micUpdatePending = false;
+            }
             if (thermalUpdated) { drawThermal(); thermalUpdated = false; }
         }
         animate();
