@@ -1,0 +1,11 @@
+MLX90642	KEYWORD1
+isNewDataAvailable	KEYWORD2
+readAddr_unsigned	KEYWORD2
+readAddr_signed	KEYWORD2
+readTa	KEYWORD2
+readTempC	KEYWORD2
+writeEEPROM	KEYWORD2
+setRefreshRate	KEYWORD2
+printFullPixelMap	KEYWORD2
+printFrame	KEYWORD2
+pix_addr	KEYWORD2
