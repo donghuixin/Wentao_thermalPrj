@@ -252,7 +252,8 @@ void loop() {
       }
     }
 
-    if (recAcc && imuOnline && (now - lastImuTime >= 10)) {
+    // 將 IMU 讀取頻率提升到 5ms (200Hz)，與藍牙發送管線對齊，避免交錯丟包漏看
+    if (recAcc && imuOnline && (now - lastImuTime >= 5)) {
       lastImuTime = now;
       // Burst read IMU Data (12 bytes starting from 0x22 OUTX_L_G)
       Wire.beginTransmission(0x6A);
