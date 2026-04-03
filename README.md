@@ -52,14 +52,20 @@ The firmware exposes the **Nordic UART Service (NUS)**:
 
 ### Data Output & Storage Format (Device → Client)
 
-All data is streamed via the RX Characteristic as ASCII text lines terminating in `\n`. Every line logged in the Web Dashboard is automatically prepended with a millisecond-precision timestamp `[HH:MM:SS.MMM]` when exported to CSV.
+The firmware completely abandoned ASCII string transmission format, leveraging a highly optimized, high-bandwidth padding-aligned **Binary `C-Struct`**. Each transmission pushes exactly 244 bytes down the BLE pipe. 
 
-| Prefix | Sensor | Storage Format Details & Physical Meaning |
-|---|---|---|
-| `I:` | IMU (LSM6DS3) | `I:<ax>,<ay>,<az>,<gx>,<gy>,<gz>`<br>• Accel: 3 float values (X, Y, Z axis) representing linear acceleration in **`g`** (gravity). Hardware range configured to **±2g**.<br>• Gyro: 3 float values (X, Y, Z axis) representing angular velocity in **`dps`** (degrees per second). Hardware range configured to **±2000 dps**.<br>• Output frequency: ~100Hz (1 sample every 10ms). |
-| `MIC:` | Audio PDM Mic | `MIC:<sample0>,<sample1>`<br>• Two consecutive raw 16-bit signed PCM audio samples generated continuously from the onboard PDM microphone.<br>• Built-in decimation targets a baseline sample pool of **16,000 Hz**. |
-| `TXX:` | Thermal IR (MLX) | `T<row_hex>:<128_char_hex_payload>`<br>• `row_hex`: A 2-character hex index `00` to `17` indicating the IR sensor row (0 to 23). <br>• `payload`: A 128-character hex string representing 64 physically sequential bytes read directly from the MLX90642 RAM (starting at `0x342C`).<br>**Data Meaning:** The payload represents 32 column pixels for the given row. Every 4 Hex characters encode a 16-bit Signed Integer. In the provided HTML dashboard, this raw 16-bit value is linearly approximated to Celsius (e.g., `temp_C = raw_signed_int / 50.0`). *Note: Genuine medical-grade temperatures require full EEPROM matrix calculations.* |
-| `SYS:` | General System | Text information containing error logs, I2C collision traces, and `STARTED/STOPPED` events. |
+This strict layout allows any external parser (e.g. C#, Python, MATLAB) to unpack the buffers directly based on strict memory offsets:
+
+| Byte Offset | Length (B) | Field Name | Type / Endianness | Parsing Logic & Padding Rules |
+|:---|:---|:---|:---|:---|
+| `[0]` | 1 | **Seq** | `uint8_t` | A running counter `0-255` rolling continuously. Used on the Web UI to explicitly detect and flag packet loss jumps in physical space. |
+| `[1-4]` | 4 | **Timestamp** | `uint32_t` (Big-Endian) | Device `millis()` heartbeat marker to correlate logs externally. |
+| `[5]` | 1 | **Mic Valid Len** | `uint8_t` | Identifies how many *Valid* Microphone bytes are in the next block. Max is 160. Must be strictly an even number. |
+| `[6-165]` | 160 | **Mic Payload** | `int16_t[80]` (Little-Endian) | The raw PCM Audio array. If purely valid data occupies `V` bytes (`V <= 160`), the remainder `160 - V` bytes are explicitly zero-padded `0x00`. |
+| `[166]` | 1 | **Thermal Valid Len** | `uint8_t` | Identifies valid Thermal frame length. Standard size is 64 Bytes (single row of 32 pixels). If 0, no data is available. |
+| `[167-230]` | 64 | **Thermal Payload** | `int16_t[32]` (**Big-Endian**) | Heat signature block representing exactly 1 row (32 pixels). Bypasses memory layout conversion and injects directly from I2C reading (hence Big Endian). Trailing layout space explicitly zeros if `Len == 0`. |
+| `[231]` | 1 | **IMU Valid Len** | `uint8_t` | Identifies valid IMU data length. Strict values are `12` or `0`. |
+| `[232-243]` | 12 | **IMU Payload** | `int16_t[6]` (Little-Endian) | Struct layout representing exactly: `[Ax, Ay, Az, Gx, Gy, Gz]`. Trailing space explicitly zeros if `Len == 0`. |
 
 ### Architectural Features
 

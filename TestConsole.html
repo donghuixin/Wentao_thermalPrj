@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
-<!-- Last Update Time: 2026-04-03 16:45 -->
+<!-- Last Update Time: 2026-04-03 17:05 -->
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -65,6 +65,7 @@
 
         .stat-box { display: flex; justify-content: space-between; font-size: 13px; color: var(--text-muted); border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 6px; }
         .stat-val { color: var(--text-main); font-weight: 500; font-family: monospace; }
+        .stat-val-small { font-size: 11px; }
 
         .dashboard { flex: 1; display: grid; grid-template-columns: 2fr 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 20px; min-height: 0; }
         .chart-container { position: relative; width: 100%; height: 100%; display: flex; flex-direction: column; }
@@ -81,7 +82,7 @@
         .terminal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
         #terminal { flex: 1; background: rgba(0,0,0,0.4); border-radius: 8px; padding: 12px; font-family: monospace; font-size: 13px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.05); display: block; }
         .log-item { display: inline-block; background: rgba(255,255,255,0.05); padding: 4px 8px; margin: 0 8px 8px 0; border-radius: 4px; white-space: pre-wrap; word-break: break-all; }
-        .log-rx { color: #6ee7b7; } .log-tx { color: #fcd34d; } .log-info { color: #93c5fd; } .log-error { color: #f87171; border-left: 2px solid #ef4444; }
+        .log-rx { color: #6ee7b7; } .log-tx { color: #fcd34d; } .log-info { color: #93c5fd; } .log-error { color: #f87171; border-left: 2px solid #ef4444; } .log-data { color: #d8b4fe; }
         ::-webkit-scrollbar { width: 6px; height: 6px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; } ::-webkit-scrollbar-thumb:hover { background: #64748b; }
     </style>
 </head>
@@ -108,7 +109,9 @@
                 <h4 style="color: var(--text-muted); font-size: 12px; text-transform: uppercase;">Device Info</h4>
                 <div class="stat-box"><span>Status</span><span class="stat-val" id="stConn">Disconnected</span></div>
                 <div class="stat-box"><span>Stream</span><span class="stat-val" id="lossIndicator">Paused</span></div>
-                <div class="stat-box"><span>Data Format</span><span class="stat-val" id="stFormat" style="color:#a78bfa;">Binary TLV</span></div>
+                <div class="stat-box"><span>Sample Rate</span><span class="stat-val stat-val-small" id="stSr">Waiting...</span></div>
+                <div class="stat-box"><span>IMU Range</span><span class="stat-val stat-val-small" id="stRange">Waiting...</span></div>
+                <div class="stat-box"><span>Data Format</span><span class="stat-val" id="stFormat" style="color:#a78bfa;">Binary Struct</span></div>
             </div>
 
             <div style="flex: 1;"></div>
@@ -119,7 +122,7 @@
                     <button id="btnStart" class="btn btn-success" style="padding: 10px 5px;" disabled>▶ Start</button>
                     <button id="btnStop" class="btn btn-danger" style="padding: 10px 5px;" disabled>⏹ Stop</button>
                 </div>
-                <button id="btnSaveCSV" class="btn btn-primary" style="background: linear-gradient(135deg, #8b5cf6, #7c3aed); margin-top: 5px;">💾 Save Audio Buffer</button>
+                <button id="btnSaveCSV" class="btn btn-primary" style="background: linear-gradient(135deg, #8b5cf6, #7c3aed); margin-top: 5px;">💾 Save CSV</button>
             </div>
         </div>
 
@@ -130,12 +133,10 @@
                 <div id="imuChart" class="chart-body"></div>
             </div>
 
-            <!-- Changed Mic Chart to pure Canvas Oscilloscope -->
+            <!-- Restored Mic ECharts Bar Graph -->
             <div class="glass-panel chart-container mic-cell">
-                <div class="title">Microphone Oscilloscope <span>[Binary 16kHz]</span></div>
-                <div class="chart-body" style="background: rgba(0,0,0,0.3); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
-                    <canvas id="micCanvas" width="800" height="200" style="display:block; width:100%; height:100%;"></canvas>
-                </div>
+                <div class="title">Mic Volume Amplitude <span>[RMS Bar Chart]</span></div>
+                <div id="micChart" class="chart-body"></div>
             </div>
 
             <div class="glass-panel chart-container thermal-cell">
@@ -201,8 +202,10 @@
         }
         const filter = new MahonyAHRS(100, 1.0, 0.0);
 
-        /* =================== TERMINAL =================== */
+        /* =================== TERMINAL & GLOBALS =================== */
         const terminal = document.getElementById('terminal');
+        window.rawDataLog = ["Timestamp,Seq,IMU_Ax,IMU_Ay,IMU_Az,IMU_Gx,IMU_Gy,IMU_Gz,MicVolumeRMS,ThermalPx0_to_Px31"]; // Header
+
         function logToTerminal(message, type = 'info') {
             const div = document.createElement('div');
             div.className = `log-item log-${type}`;
@@ -213,6 +216,27 @@
             terminal.scrollTop = terminal.scrollHeight;
         }
 
+        function parseTextStatus(line) {
+            if (line.includes('IMU:') && (line.includes('OK') || line.includes('ERR'))) {
+                const label = document.getElementById('nameAcc');
+                if (line.includes('ERR')) { label.style.color = 'var(--danger)'; label.innerText = 'IMU (ERR)'; }
+                else { label.style.color = 'var(--text-main)'; label.innerText = 'IMU (6-Axis)'; }
+                let accM = line.match(/Acc:\s*([^|]+)/);
+                let gyrM = line.match(/Gyro:\s*([^\s|]+)/);
+                if (accM && gyrM) document.getElementById('stRange').innerText = `${accM[1].trim()}, ${gyrM[1].trim()}`;
+            } else if (line.includes('MIC:') && (line.includes('OK') || line.includes('ERR'))) {
+                const label = document.getElementById('nameMic');
+                if (line.includes('ERR')) { label.style.color = 'var(--danger)'; label.innerText = 'Mic (ERR)'; }
+                else { label.style.color = 'var(--text-main)'; label.innerText = 'Microphone'; }
+                let rateM = line.match(/Rate:\s*([^\s]+)/);
+                if (rateM) document.getElementById('stSr').innerText = `Mic: ${rateM[1]}`;
+            } else if (line.includes('MLX:') && (line.includes('OK') || line.includes('ERR'))) {
+                const label = document.getElementById('nameIr');
+                if (line.includes('ERR')) { label.style.color = 'var(--danger)'; label.innerText = 'Thermal IR (ERR)'; }
+                else { label.style.color = 'var(--text-main)'; label.innerText = 'Thermal IR'; }
+            }
+        }
+
         const UART_SERV_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
         const UART_TX_CHAR = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
         const UART_RX_CHAR = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
@@ -220,47 +244,51 @@
         let bleDevice = null, txChar = null;
         let lastSeq = -1;
 
-        /* =================== NATIVE CANVAS MIC OSCOPE =================== */
-        const micCanvas = document.getElementById('micCanvas');
-        const micCtx = micCanvas.getContext('2d');
-        const MIC_SAMPLES_DISPLAY = 1600; // Display window
-        const micWaveBuf = new Int16Array(MIC_SAMPLES_DISPLAY);
-        let micWaveIdx = 0;
-        let micUpdatePending = false;
+        /* =================== ECHARTS & THERMAL CANVASES =================== */
+        const imuChart = echarts.init(document.getElementById('imuChart'));
+        const imuData = [[], [], [], [], [], []];
+        for (let i=0; i<6; i++) for (let j=0; j<100; j++) imuData[i].push(0);
         
-        // For CSV saving (save last 100k samples roughly 6 seconds)
-        const micHistory = new Int16Array(100000); 
-        let micHistIdx = 0;
+        imuChart.setOption({
+            tooltip: { trigger: 'axis' },
+            grid: { left: '3%', right: '4%', bottom: '5%', top: '5%', containLabel: true },
+            xAxis: { type: 'category', boundaryGap: false, data: Array.from({length:100},(_,i)=>i), show: false },
+            yAxis: [ { type: 'value', splitLine: { show: false } }, { type: 'value', splitLine: { show: false } } ],
+            series: ['Acc X','Acc Y','Acc Z','Gyr X','Gyr Y','Gyr Z'].map((n, i) => ({
+                name: n, type: 'line', showSymbol: false, data: imuData[i], yAxisIndex: i < 3 ? 0 : 1, lineStyle: { width: 2 }
+            }))
+        });
 
-        function drawMicrophoneOscilloscope() {
-            micCtx.clearRect(0, 0, micCanvas.width, micCanvas.height);
-            micCtx.beginPath();
-            micCtx.strokeStyle = '#3b82f6';
-            micCtx.lineWidth = 1.5;
-            
-            const w = micCanvas.width;
-            const h = micCanvas.height;
-            const mid = h / 2;
-            const step = w / MIC_SAMPLES_DISPLAY;
+        // Restored EChart for Microphone (Classic Volumetric Bars)
+        const micChart = echarts.init(document.getElementById('micChart'));
+        const micData = Array.from({length: 100}, () => 0); // 100 Bars representing volume over time
+        micChart.setOption({
+            grid: { left: '3%', right: '4%', bottom: '5%', top: '5%', containLabel: true },
+            xAxis: { type: 'category', data: Array.from({length: 100}, (_,i)=>i), show: false },
+            yAxis: { type: 'value', splitLine: { lineStyle: { color: 'rgba(255,255,255,0.05)' } }, min: 0, max: 1.0 },
+            series: [{
+                type: 'bar',
+                data: micData,
+                itemStyle: {
+                    color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                        { offset: 0, color: '#3b82f6' },
+                        { offset: 1, color: '#10b981' }
+                    ])
+                },
+                barWidth: '70%',
+                animation: false
+            }]
+        });
 
-            // Plot array 
-            for(let i=0; i<MIC_SAMPLES_DISPLAY; i++) {
-                // scale PDM int16 roughly to fit 
-                let val = micWaveBuf[i] / 32768.0; 
-                let y = mid - (val * mid * 3.0); // Boost amplitude 3x graphically
-                if(i===0) micCtx.moveTo(i*step, y);
-                else micCtx.lineTo(i*step, y);
-            }
-            micCtx.stroke();
-        }
+        let imuUpdatePending = false;
+        let micUpdatePending = false;
+        let thermalUpdated = false;
 
-        /* =================== THERMAL CANVAS 32x24 =================== */
         const thermalCanvas = document.getElementById('thermalCanvas');
         const thermalCtx = thermalCanvas.getContext('2d');
         const GRID_W = 32; const GRID_H = 24;
         let thermalData = new Float32Array(GRID_W * GRID_H).fill(25);
         let thermalIdx = 0;
-        let thermalUpdated = false;
 
         function drawThermal() {
             const cw = thermalCanvas.width / GRID_W;
@@ -277,22 +305,6 @@
             }
         }
 
-        /* =================== ECHARTS IMU =================== */
-        const imuChart = echarts.init(document.getElementById('imuChart'));
-        const imuData = [[], [], [], [], [], []];
-        for (let i=0; i<6; i++) for (let j=0; j<100; j++) imuData[i].push(0);
-        
-        imuChart.setOption({
-            tooltip: { trigger: 'axis' },
-            grid: { left: '3%', right: '4%', bottom: '5%', top: '5%', containLabel: true },
-            xAxis: { type: 'category', boundaryGap: false, data: Array.from({length:100},(_,i)=>i), show: false },
-            yAxis: [ { type: 'value', splitLine: { show: false } }, { type: 'value', splitLine: { show: false } } ],
-            series: ['Acc X','Acc Y','Acc Z','Gyr X','Gyr Y','Gyr Z'].map((n, i) => ({
-                name: n, type: 'line', showSymbol: false, data: imuData[i], yAxisIndex: i < 3 ? 0 : 1, lineStyle: { width: 2 }
-            }))
-        });
-        let imuUpdatePending = false;
-
         /* =================== THREE.JS 3D PCB =================== */
         const sceneContainer = document.getElementById('scene-container');
         const scene = new THREE.Scene();
@@ -308,6 +320,7 @@
 
         window.addEventListener('resize', () => {
             imuChart.resize();
+            micChart.resize();
             camera.aspect = sceneContainer.clientWidth / sceneContainer.clientHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(sceneContainer.clientWidth, sceneContainer.clientHeight);
@@ -315,6 +328,7 @@
 
         /* =================== BLUETOOTH BINARY PARSER =================== */
         let bleTextBuffer = "";
+        let logCounter = 0; // throttle terminal rendering
 
         document.getElementById('btnConnect').addEventListener('click', async () => {
             if (bleDevice && bleDevice.gatt.connected) { bleDevice.gatt.disconnect(); return; }
@@ -340,95 +354,114 @@
                     const rawBuffer = e.target.value.buffer;
                     const view = new DataView(rawBuffer);
                     
-                    // Peek first byte to check if it's our ASCII status message (e.g., \n or 'S' for SYS, '=' for ==)
-                    const fb = view.getUint8(0);
-                    if (fb === 0x0A || fb === 0x3D || fb === 0x53) {
+                    // ANY packet completely lacking 244 bytes implies its part of Arduino `println` system strings!
+                    if (view.byteLength < 244) {
                         const str = new TextDecoder().decode(rawBuffer);
                         bleTextBuffer += str;
                         let nlIdx;
                         while ((nlIdx = bleTextBuffer.indexOf('\n')) !== -1) {
                             let line = bleTextBuffer.substring(0, nlIdx).trim();
                             bleTextBuffer = bleTextBuffer.substring(nlIdx+1);
-                            if(line) logToTerminal("RX: " + line, "rx");
+                            if(line) {
+                                logToTerminal("RX: " + line, "rx");
+                                parseTextStatus(line); // Refresh UI labels 
+                            }
                         }
                         return;
                     }
 
                     // ----------- BINARY FIXED STRUCTURE PARSER -----------
-                    // 固定的 244 字节包结构解码：
-                    // [0]       Seq
-                    // [1-4]     Timestamp (4 bytes, Big Endian)
-                    // [5]       Mic Valid Length
-                    // [6-165]   Mic Data (160 bytes max, padded with 0)
-                    // [166]     Thermal Valid Length
-                    // [167-230] Thermal Data (64 bytes max, padded with 0)
-                    // [231]     IMU Valid Length
-                    // [232-243] IMU Data (12 bytes max, padded with 0)
-
-                    if (view.byteLength < 244) return; // Error guard
-
-                    // 1. Seq
                     const seq = view.getUint8(0);
                     if(lastSeq !== -1) {
                         let expected = (lastSeq + 1) & 0xFF;
                         const ind = document.getElementById('lossIndicator');
                         if(seq !== expected) {
-                            ind.innerText = `Loss! jump ${lastSeq}->${seq}`; 
-                            ind.style.color = "var(--danger)";
+                            ind.innerText = `Loss! jump ${lastSeq}->${seq}`; ind.style.color = "var(--danger)";
                         } else {
-                            ind.innerText = "Active (Struct)";
-                            ind.style.color = "var(--success)";
+                            ind.innerText = "Active (Struct)"; ind.style.color = "var(--success)";
                         }
                     }
                     lastSeq = seq;
                     
-                    // 2. Timestamp (If needed, you can extract: view.getUint32(1, false))
+                    const timeStamp = view.getUint32(1, false);
 
-                    // 3. Mic Data [5 -> 165]
-                    const mLen = view.getUint8(5);
-                    const mOffset = 6;
-                    if (mLen > 0 && mLen <= 160) {
-                        for(let i=0; i<mLen; i+=2) {
-                            const sample = view.getInt16(mOffset+i, true);
-                            micWaveBuf[micWaveIdx++] = sample;
-                            micHistory[micHistIdx++] = sample;
-                            if(micHistIdx >= micHistory.length) micHistIdx = 0; 
-                            if(micWaveIdx >= MIC_SAMPLES_DISPLAY) {
-                                micWaveBuf.copyWithin(0, MIC_SAMPLES_DISPLAY/2);
-                                micWaveIdx = MIC_SAMPLES_DISPLAY/2;
-                            }
-                        }
-                        micUpdatePending = true;
-                    }
+                    // --- Variable Extractor ---
+                    let csvLine = `${timeStamp},${seq}`;
+                    let imuLogData = "Null", micLogData = "Null", irLogData = "Null";
 
-                    // 4. Thermal Data [166 -> 230]
-                    const fLen = view.getUint8(166);
-                    const fOffset = 167;
-                    if (fLen > 0 && fLen <= 64) {
-                        for(let i=0; i<fLen; i+=2) {
-                            const rawVal = view.getInt16(fOffset+i, false);
-                            thermalData[thermalIdx++] = rawVal / 50.0;
-                            if (thermalIdx >= 768) {
-                                thermalIdx = 0;
-                                thermalUpdated = true;
-                            }
-                        }
-                    }
-
-                    // 5. IMU Data [231 -> 243]
+                    // IMU Data [231 -> 243] (Decoded first for CSV structure)
                     const iLen = view.getUint8(231);
                     const iOffset = 232;
+                    let cAx="0", cAy="0", cAz="0", cGx="0", cGy="0", cGz="0";
                     if (iLen === 12) {
                         const ax = view.getInt16(iOffset, true); const ay = view.getInt16(iOffset+2, true); const az = view.getInt16(iOffset+4, true);
                         const gx = view.getInt16(iOffset+6, true); const gy = view.getInt16(iOffset+8, true); const gz = view.getInt16(iOffset+10, true);
                         
                         const af = 2.0 / 32768.0; const gf = 2000.0 / 32768.0;
-                        imuData[0].push(ax*af); imuData[0].shift(); imuData[1].push(ay*af); imuData[1].shift(); imuData[2].push(az*af); imuData[2].shift();
-                        imuData[3].push(gx*gf); imuData[3].shift(); imuData[4].push(gy*gf); imuData[4].shift(); imuData[5].push(gz*gf); imuData[5].shift();
+                        const fax = ax*af; const fay = ay*af; const faz = az*af; 
+                        const fgx = gx*gf; const fgy = gy*gf; const fgz = gz*gf;
+
+                        imuData[0].push(fax); imuData[0].shift(); imuData[1].push(fay); imuData[1].shift(); imuData[2].push(faz); imuData[2].shift();
+                        imuData[3].push(fgx); imuData[3].shift(); imuData[4].push(fgy); imuData[4].shift(); imuData[5].push(fgz); imuData[5].shift();
                         
-                        filter.update(gx*Math.PI/180, gy*Math.PI/180, gz*Math.PI/180, ax, ay, az);
+                        filter.update(fgx*Math.PI/180, fgy*Math.PI/180, fgz*Math.PI/180, fax, fay, faz);
                         pcbGroup.quaternion.set(filter.q1, filter.q2, filter.q3, filter.q0);
                         imuUpdatePending = true;
+
+                        cAx = fax.toFixed(2); cAy = fay.toFixed(2); cAz = faz.toFixed(2);
+                        cGx = fgx.toFixed(2); cGy = fgy.toFixed(2); cGz = fgz.toFixed(2);
+                        imuLogData = `A[${cAx},${cAy},${cAz}] G[${cGx},${cGy},${cGz}]`;
+                    }
+                    csvLine += `,${cAx},${cAy},${cAz},${cGx},${cGy},${cGz}`;
+
+                    // Mic Data [5 -> 165]
+                    const mLen = view.getUint8(5);
+                    const mOffset = 6;
+                    let rms = 0;
+                    if (mLen > 0 && mLen <= 160) {
+                        let sumSqr = 0;
+                        for(let i=0; i<mLen; i+=2) {
+                            const sample = view.getInt16(mOffset+i, true);
+                            sumSqr += (sample * sample);
+                        }
+                        // RMS Volume for Bar Chart 
+                        rms = Math.sqrt(sumSqr / (mLen/2)) / 32768.0;
+                        
+                        micData.push(rms);
+                        micData.shift();
+                        micUpdatePending = true;
+                        micLogData = `Vol: ${(rms*100).toFixed(1)}%`;
+                    }
+                    csvLine += `,${rms.toFixed(4)}`;
+
+                    // Thermal Data [166 -> 230]
+                    const fLen = view.getUint8(166);
+                    const fOffset = 167;
+                    let tArr = []; // Store raw floats for CSV
+                    if (fLen > 0 && fLen <= 64) {
+                        for(let i=0; i<fLen; i+=2) {
+                            const rawVal = view.getInt16(fOffset+i, false);
+                            let tempC = rawVal / 50.0;
+                            tArr.push(tempC.toFixed(1));
+                            thermalData[thermalIdx++] = tempC;
+                            if (thermalIdx >= 768) {
+                                thermalIdx = 0;
+                                thermalUpdated = true;
+                            }
+                        }
+                        irLogData = `Len: ${fLen}B (Px ${tArr[0]}C..${tArr[tArr.length-1]}C)`;
+                    } else {
+                        tArr.push(""); // empty row
+                    }
+                    csvLine += `,${tArr.join(';')}`;
+
+                    // Store global CSV
+                    window.rawDataLog.push(csvLine);
+
+                    // Throttle terminal prints to ~4 times a second (mod 50 out of 200 packets/sec)
+                    logCounter++;
+                    if(logCounter % 50 === 0) {
+                        logToTerminal(`DATA | IMU: ${imuLogData} | MIC: ${micLogData} | IR: ${irLogData}`, 'data');
                     }
                 });
 
@@ -466,13 +499,14 @@
         });
 
         document.getElementById('btnSaveCSV').addEventListener('click', () => {
-            const csvData = "MicRawAudio\n" + Array.from(micHistory).slice(0, micHistIdx).join('\n');
+            if (window.rawDataLog.length <= 1) { logToTerminal("No data collected yet.", "error"); return; }
+            const csvData = "\uFEFF" + window.rawDataLog.join('\n'); // BOM for excel
             const blob = new Blob([csvData], { type: 'text/csv;charset=utf-8;' });
             const link = document.createElement("a");
             link.setAttribute("href", URL.createObjectURL(blob));
-            link.setAttribute("download", `WentaoAudioDump_${Date.now()}.csv`);
+            link.setAttribute("download", `Wentao_Sensors_${Date.now()}.csv`);
             document.body.appendChild(link); link.click(); document.body.removeChild(link);
-            logToTerminal(`Dumped Audio buffer (${micHistIdx} samples)`, 'success');
+            logToTerminal(`Exported comprehensive CSV (${window.rawDataLog.length - 1} frames).`, 'success');
         });
 
         // 60FPS Render Loop
@@ -482,7 +516,7 @@
 
             // Throttle UI charts to remain responsive
             if (imuUpdatePending) { imuChart.setOption({ series: imuData.map(d => ({ data: d })) }); imuUpdatePending = false; }
-            if (micUpdatePending) { drawMicrophoneOscilloscope(); micUpdatePending = false; }
+            if (micUpdatePending) { micChart.setOption({ series: [{ data: micData }] }); micUpdatePending = false; }
             if (thermalUpdated) { drawThermal(); thermalUpdated = false; }
         }
         animate();
