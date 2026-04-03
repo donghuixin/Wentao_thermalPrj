@@ -154,6 +154,9 @@ void prph_connect_callback(uint16_t conn_handle) {
     conn->requestPHY();
     conn->requestDataLengthUpdate();
     conn->requestMtuExchange(247);
+    // Request an aggressive connection interval (7.5ms ~ 15ms)
+    // Helps Android / Windows / iOS drain the Nordic TX FIFO faster
+    conn->requestConnectionParameter(6, 12, 0, 400);
   }
 }
 
@@ -222,6 +225,9 @@ void setup() {
   PDM.onReceive(onPDMdata);
   if (PDM.begin(1, 16000)) micOnline = true;
 
+  // 確保 1MHz 設定不被 myIMU 等其他庫覆寫
+  Wire.setClock(1000000);
+
   Serial.println("System Ready.");
 }
 
@@ -244,16 +250,21 @@ void loop() {
 
     if (recAcc && imuOnline && (now - lastImuTime >= 10)) {
       lastImuTime = now;
-      int16_t ax = myIMU.readRawAccelX();
-      int16_t ay = myIMU.readRawAccelY();
-      int16_t az = myIMU.readRawAccelZ();
-      int16_t gx = myIMU.readRawGyroX();
-      int16_t gy = myIMU.readRawGyroY();
-      int16_t gz = myIMU.readRawGyroZ();
-      
-      int16_t imuData[6] = {ax, ay, az, gx, gy, gz};
-      uint8_t* bytePtr = (uint8_t*)imuData;
-      for(int i=0; i<12; i++) imuBuf.push(bytePtr[i]);
+      // Burst read IMU Data (12 bytes starting from 0x22 OUTX_L_G)
+      Wire.beginTransmission(0x6A);
+      Wire.write(0x22);
+      if (Wire.endTransmission(false) == 0 && Wire.requestFrom((uint8_t)0x6A, (uint8_t)12) == 12) {
+        int16_t gx = Wire.read() | (Wire.read() << 8);
+        int16_t gy = Wire.read() | (Wire.read() << 8);
+        int16_t gz = Wire.read() | (Wire.read() << 8);
+        int16_t ax = Wire.read() | (Wire.read() << 8);
+        int16_t ay = Wire.read() | (Wire.read() << 8);
+        int16_t az = Wire.read() | (Wire.read() << 8);
+        
+        int16_t imuData[6] = {ax, ay, az, gx, gy, gz};
+        uint8_t* bytePtr = (uint8_t*)imuData;
+        for(int i=0; i<12; i++) imuBuf.push(bytePtr[i]);
+      }
     }
 
     // 严苛定长定偏移打包 (Fixed Padding Struct)
