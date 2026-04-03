@@ -62,6 +62,7 @@ unsigned long lastPackTime = 0;
 unsigned long lastMlxReadTime = 0;
 unsigned long lastImuTime = 0;
 int currentMlxRow = 0;
+int currentMlxRowOut = 0;
 uint8_t packetSeq = 0;
 
 // ===================== MLX90642 =====================
@@ -285,7 +286,14 @@ void loop() {
       if (fAvail > 64) fAvail = 64;
       fAvail = fAvail & ~1; // 仅限偶数
       
-      txBuf[166] = (uint8_t)fAvail; // Valid Length
+      if (fAvail == 64) {
+        txBuf[166] = 0x80 | (currentMlxRowOut & 0x1F);
+        currentMlxRowOut++;
+        if (currentMlxRowOut >= 24) currentMlxRowOut = 0;
+      } else {
+        txBuf[166] = (uint8_t)fAvail; // Valid Length
+      }
+
       for(uint16_t i=0; i<fAvail; i++) {
         thermalBuf.pop(txBuf[167 + i]);
       }

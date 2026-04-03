@@ -204,7 +204,8 @@
 
         /* =================== TERMINAL & GLOBALS =================== */
         const terminal = document.getElementById('terminal');
-        window.rawDataLog = ["Timestamp,Seq,IMU_Ax,IMU_Ay,IMU_Az,IMU_Gx,IMU_Gy,IMU_Gz,MicVolumeRMS,ThermalPx0_to_Px31"]; // Header
+        let micHeaders = Array.from({length: 80}, (_,i) => `MicVol_${i}`).join(',');
+        window.rawDataLog = [`Timestamp,Seq,IMU_Ax,IMU_Ay,IMU_Az,IMU_Gx,IMU_Gy,IMU_Gz,${micHeaders},ThermalPx0_to_Px31`]; // Header
 
         function logToTerminal(message, type = 'info') {
             const div = document.createElement('div');
@@ -417,28 +418,39 @@
                     // Mic Data [5 -> 165]
                     const mLen = view.getUint8(5);
                     const mOffset = 6;
-                    let rms = 0;
+                    let micVolArr = new Array(80).fill("0.0000");
+                    let lastVol = 0;
                     if (mLen > 0 && mLen <= 160) {
-                        let sumSqr = 0;
                         for(let i=0; i<mLen; i+=2) {
                             const sample = view.getInt16(mOffset+i, true);
-                            sumSqr += (sample * sample);
+                            const vol = Math.abs(sample) / 32768.0;
+                            micVolArr[i/2] = vol.toFixed(4);
+                            lastVol = vol;
                         }
-                        // RMS Volume for Bar Chart 
-                        rms = Math.sqrt(sumSqr / (mLen/2)) / 32768.0;
                         
-                        micData.push(rms);
+                        micData.push(lastVol);
                         micData.shift();
                         micUpdatePending = true;
-                        micLogData = `Vol: ${(rms*100).toFixed(1)}%`;
+                        const seqStr = micVolArr.slice(0, mLen/2).map(v => (v*100).toFixed(1) + '%').join(', ');
+                        micLogData = `Vol(last): ${(lastVol*100).toFixed(1)}% | Seq: [${seqStr}]`;
                     }
-                    csvLine += `,${rms.toFixed(4)}`;
+                    csvLine += `,${micVolArr.join(',')}`;
 
                     // Thermal Data [166 -> 230]
-                    const fLen = view.getUint8(166);
+                    const fLenRaw = view.getUint8(166);
+                    let fLen = fLenRaw;
+                    let rowId = -1;
+                    if ((fLenRaw & 0x80) !== 0) {
+                        fLen = 64;
+                        rowId = fLenRaw & 0x1F;
+                    }
                     const fOffset = 167;
                     let tArr = []; // Store raw floats for CSV
                     if (fLen > 0 && fLen <= 64) {
+                        if (rowId !== -1) {
+                            // Sync thermal drawing to correct row
+                            thermalIdx = rowId * 32;
+                        }
                         for(let i=0; i<fLen; i+=2) {
                             const rawVal = view.getInt16(fOffset+i, false);
                             let tempC = rawVal / 50.0;
