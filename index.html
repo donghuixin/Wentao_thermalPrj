@@ -251,6 +251,13 @@
                 const label = document.getElementById('nameIr');
                 if (line.includes('ERR')) { label.style.color = 'var(--danger)'; label.innerText = 'Thermal IR (ERR)'; }
                 else { label.style.color = 'var(--text-main)'; label.innerText = 'Thermal IR'; }
+            } else if (line.includes('BLE_READY')) {
+                document.getElementById('stConn').innerText = 'Ready';
+                document.getElementById('stConn').style.color = 'var(--success)';
+                document.getElementById('btnStart').disabled = false;
+                logToTerminal('BLE negotiation complete - Start enabled', 'success');
+            } else if (line.includes('SYS: WAIT')) {
+                logToTerminal('BLE negotiation still in progress, please wait...', 'info');
             }
         }
 
@@ -546,9 +553,10 @@
                 logToTerminal("Connected successful. Binary Protocol Online.", 'success');
                 document.getElementById('btnConnect').innerText = "Disconnect";
                 document.getElementById('btnConnect').className = "btn btn-danger";
-                document.getElementById('stConn').innerText = "Connected";
-                document.getElementById('stConn').style.color = "var(--success)";
-                ['btnStart','btnTest','btnStopTx'].forEach(id => document.getElementById(id).disabled = false);
+                document.getElementById('stConn').innerText = 'Negotiating...';
+                document.getElementById('stConn').style.color = '#fbbf24';
+                ['btnTest','btnStopTx'].forEach(id => document.getElementById(id).disabled = false);
+                document.getElementById('btnStart').disabled = true; // Wait for BLE_READY
             } catch (err) {
                 logToTerminal(`Connection err: ${err}`, 'error');
             }

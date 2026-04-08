@@ -23,6 +23,10 @@ bool pendingLinkDiagReport = false;
 uint8_t pendingLinkDiagCount = 0;
 unsigned long lastLinkDiagMs = 0;
 
+bool bleNegotiationDone = false;
+unsigned long bleConnectTime = 0;
+const unsigned long BLE_NEGO_TIMEOUT_MS = 8000; // 8秒超時容錯
+
 // ===================== Ring Buffer Template =====================
 template <typename T, uint16_t N>
 class RingBuf {
@@ -204,6 +208,8 @@ void prph_connect_callback(uint16_t conn_handle) {
   pendingLinkDiagReport = true;
   pendingLinkDiagCount = 8; // 连接后连续报告几次，观察参数协商是否成功
   lastLinkDiagMs = 0;
+  bleNegotiationDone = false;
+  bleConnectTime = millis();
   BLEConnection* conn = Bluefruit.Connection(conn_handle);
   if (conn) {
     conn->requestPHY();
@@ -213,6 +219,11 @@ void prph_connect_callback(uint16_t conn_handle) {
     // Helps Android / Windows / iOS drain the Nordic TX FIFO faster
     conn->requestConnectionParameter(6); // interval 6*1.25=7.5ms, defaults used for latency/timeout
   }
+}
+
+void prph_disconnect_callback(uint16_t conn_handle, uint8_t reason) {
+  isRecording = false;
+  bleNegotiationDone = false;
 }
 
 void sendSystemStatus() {
@@ -227,6 +238,10 @@ void processCommand(String cmd) {
   cmd.trim();
   if (cmd.startsWith("START_REC:")) {
     if (cmd.length() >= 15) {
+      if (!bleNegotiationDone) {
+        bleuart.println("SYS: WAIT - BLE negotiation in progress...");
+        return;
+      }
       recMic = (cmd.charAt(10) == '1');
       recAcc = (cmd.charAt(12) == '1');
       recIr  = (cmd.charAt(14) == '1');
@@ -269,6 +284,7 @@ void setup() {
   Bluefruit.setTxPower(4);
   Bluefruit.setName(DEVICE_NAME);
   Bluefruit.Periph.setConnectCallback(prph_connect_callback);
+  Bluefruit.Periph.setDisconnectCallback(prph_disconnect_callback);
   Bluefruit.Periph.setConnInterval(6, 6); // 优先请求最短 7.5ms
 
   bleuart.begin();
@@ -299,6 +315,23 @@ void loop() {
     pendingStatusReport = false;
   }
   checkIncomingData();
+
+  // BLE 參數協商完成檢測
+  if (!bleNegotiationDone && Bluefruit.connected()) {
+    uint16_t conn_hdl = Bluefruit.connHandle();
+    BLEConnection* conn = Bluefruit.Connection(conn_hdl);
+    if (conn && bleuart.notifyEnabled(conn_hdl)) {
+      uint16_t mtu = conn->getMtu();
+      unsigned long elapsed = millis() - bleConnectTime;
+      if (mtu >= 200) {
+        bleNegotiationDone = true;
+        bleuart.printf("SYS: BLE_READY (MTU=%u, %.1fs)\n", mtu, elapsed / 1000.0);
+      } else if (elapsed > BLE_NEGO_TIMEOUT_MS) {
+        bleNegotiationDone = true;
+        bleuart.printf("SYS: BLE_READY (timeout, MTU=%u)\n", mtu);
+      }
+    }
+  }
 
   if (isRecording) {
     uint32_t nowUs = micros();
