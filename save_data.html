@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sensor Data Saver</title>
+
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --panel-bg: rgba(22, 27, 43, 0.7);
+            --panel-border: rgba(255, 255, 255, 0.08);
+            --text-main: #e2e8f0;
+            --text-muted: #94a3b8;
+            --accent: #3b82f6;
+            --success: #10b981;
+            --danger: #ef4444;
+            --border-radius: 16px;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: radial-gradient(circle at 50% -20%, #1a233a, var(--bg-color));
+            color: var(--text-main);
+            margin: 0;
+            padding: 20px;
+            min-height: 100vh;
+            box-sizing: border-box;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .glass-panel {
+            background: var(--panel-bg);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--panel-border);
+            border-radius: var(--border-radius);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+            padding: 30px;
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            margin: 0 0 10px 0;
+            font-size: 2rem;
+            font-weight: 600;
+        }
+
+        .subtitle {
+            color: var(--text-muted);
+            margin-bottom: 25px;
+        }
+
+        .btn {
+            padding: 12px 16px;
+            border: none;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            color: white;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            width: 100%;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #3b82f6, #2563eb);
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, #10b981, #059669);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #ef4444, #dc2626);
+        }
+
+        .btn:disabled {
+            background: #334155;
+            color: #94a3b8;
+            cursor: not-allowed;
+        }
+
+        .btn:not(:disabled):hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+        }
+
+        .switch-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 8px;
+            margin-bottom: 10px;
+        }
+
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 44px;
+            height: 24px;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #475569;
+            transition: .4s;
+            border-radius: 24px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked+.slider {
+            background-color: var(--success);
+        }
+
+        input:checked+.slider:before {
+            transform: translateX(20px);
+        }
+
+        .stat-box {
+            display: flex;
+            justify-content: space-between;
+            font-size: 14px;
+            color: var(--text-muted);
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+            padding: 10px 0;
+        }
+
+        .stat-val {
+            color: var(--text-main);
+            font-weight: 500;
+            font-family: monospace;
+        }
+
+        .section-title {
+            color: var(--text-muted);
+            font-size: 12px;
+            text-transform: uppercase;
+            margin: 20px 0 10px 0;
+            font-weight: 600;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            font-size: 14px;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--panel-border);
+            border-radius: 8px;
+            color: var(--text-main);
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        .button-group {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .back-link {
+            display: inline-block;
+            color: var(--accent);
+            text-decoration: none;
+            margin-bottom: 20px;
+            font-weight: 500;
+        }
+
+        .back-link:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="index.html" class="back-link">← Back to Dashboard</a>
+
+        <div class="glass-panel">
+            <h1>📊 Sensor Data Collection</h1>
+            <p class="subtitle">Connect Bluetooth device and collect Microphone, IMU and Thermal IR data</p>
+
+            <button id="btnConnect" class="btn btn-primary">🔗 Connect Bluetooth</button>
+
+            <div class="section-title">Sensor Configuration</div>
+            <div class="switch-row">
+                <span id="nameMic">Microphone</span>
+                <label class="switch">
+                    <input type="checkbox" id="swMic" checked>
+                    <span class="slider"></span>
+                </label>
+            </div>
+            <div class="switch-row">
+                <span id="nameAcc">IMU (6-Axis)</span>
+                <label class="switch">
+                    <input type="checkbox" id="swAcc" checked>
+                    <span class="slider"></span>
+                </label>
+            </div>
+            <div class="switch-row">
+                <span id="nameIr">Thermal IR</span>
+                <label class="switch">
+                    <input type="checkbox" id="swIr" checked>
+                    <span class="slider"></span>
+                </label>
+            </div>
+
+            <div class="section-title">Device Status</div>
+            <div class="stat-box">
+                <span>Connection</span>
+                <span class="stat-val" id="stConn">Disconnected</span>
+            </div>
+            <div class="stat-box">
+                <span>Data Stream</span>
+                <span class="stat-val" id="lossIndicator">Paused</span>
+            </div>
+            <div class="stat-box">
+                <span>Frames Collected</span>
+                <span class="stat-val" id="dataCount">0</span>
+            </div>
+
+            <div class="section-title">Real-time Sampling Rate</div>
+            <div class="stat-box">
+                <span>Packet Rate</span>
+                <span class="stat-val" id="packetRate">0 Hz</span>
+            </div>
+            <div class="stat-box">
+                <span>Microphone Rate</span>
+                <span class="stat-val" id="micRate">0 Hz</span>
+            </div>
+            <div class="stat-box">
+                <span>IMU Rate</span>
+                <span class="stat-val" id="imuRate">0 Hz</span>
+            </div>
+            <div class="stat-box">
+                <span>Thermal Rate</span>
+                <span class="stat-val" id="thermalRate">0 Hz</span>
+            </div>
+
+            <div class="section-title">Data Collection Control</div>
+            <div class="button-group">
+                <button id="btnStart" class="btn btn-success" disabled>▶ Start Collection</button>
+                <button id="btnStop" class="btn btn-danger" disabled>⏹ Stop Collection</button>
+            </div>
+
+            <div class="section-title">Data Export</div>
+            <div class="form-group">
+                <label for="filename">Filename (without extension)</label>
+                <input type="text" id="filename" name="filename" placeholder="sensor_data" value="sensor_data">
+            </div>
+
+            <button id="btnSave" class="btn btn-primary">💾 Save CSV File</button>
+        </div>
+    </div>
+
+    <script>
+        /* =================== BLUETOOTH & DATA COLLECTION =================== */
+        const UART_SERV_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+        const UART_TX_CHAR = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
+        const UART_RX_CHAR = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
+
+        let bleDevice = null, txChar = null;
+        let lastSeq = -1;
+
+        // Sampling rate calculation
+        let packetCount = 0;
+        let micSampleCount = 0;
+        let imuSampleCount = 0;
+        let thermalRowCount = 0;
+        let rateStartTime = Date.now();
+
+        // CSV Headers for Raw Data
+        let micHeaders = Array.from({length: 80}, (_,i) => `Mic_Raw_${i}`).join(',');
+        let thermalHeaders = Array.from({length: 32}, (_,i) => `Thermal_Raw_${i}`).join(',');
+        window.rawDataLog = [`Seq,Timestamp,Mic_Valid_Len,${micHeaders},Thermal_Valid_Len,${thermalHeaders},IMU_Valid_Len,IMU_Raw_Ax,IMU_Raw_Ay,IMU_Raw_Az,IMU_Raw_Gx,IMU_Raw_Gy,IMU_Raw_Gz`];
+
+        function parseTextStatus(line) {
+            if (line.includes('IMU:') && (line.includes('OK') || line.includes('ERR'))) {
+                const label = document.getElementById('nameAcc');
+                if (line.includes('ERR')) {
+                    label.style.color = 'var(--danger)';
+                    label.innerText = 'IMU (ERR)';
+                } else {
+                    label.style.color = 'var(--text-main)';
+                    label.innerText = 'IMU (6-Axis)';
+                }
+            } else if (line.includes('MIC:') && (line.includes('OK') || line.includes('ERR'))) {
+                const label = document.getElementById('nameMic');
+                if (line.includes('ERR')) {
+                    label.style.color = 'var(--danger)';
+                    label.innerText = 'Mic (ERR)';
+                } else {
+                    label.style.color = 'var(--text-main)';
+                    label.innerText = 'Microphone';
+                }
+            } else if (line.includes('MLX:') && (line.includes('OK') || line.includes('ERR'))) {
+                const label = document.getElementById('nameIr');
+                if (line.includes('ERR')) {
+                    label.style.color = 'var(--danger)';
+                    label.innerText = 'Thermal IR (ERR)';
+                } else {
+                    label.style.color = 'var(--text-main)';
+                    label.innerText = 'Thermal IR';
+                }
+            }
+        }
+
+        /* =================== BLUETOOTH CONNECTION =================== */
+        document.getElementById('btnConnect').addEventListener('click', async () => {
+            if (bleDevice && bleDevice.gatt.connected) {
+                bleDevice.gatt.disconnect();
+                return;
+            }
+
+            try {
+                bleDevice = await navigator.bluetooth.requestDevice({
+                    filters: [{ services: [UART_SERV_UUID] }],
+                    optionalServices: [UART_SERV_UUID]
+                });
+
+                bleDevice.addEventListener('gattserverdisconnected', () => {
+                    document.getElementById('btnConnect').innerText = "🔗 Connect Bluetooth";
+                    document.getElementById('btnConnect').className = "btn btn-primary";
+                    document.getElementById('stConn').innerText = "Disconnected";
+                    ['btnStart','btnStop'].forEach(id => document.getElementById(id).disabled = true);
+                });
+
+                const server = await bleDevice.gatt.connect();
+                const service = await server.getPrimaryService(UART_SERV_UUID);
+                txChar = await service.getCharacteristic(UART_TX_CHAR);
+                const rxChar = await service.getCharacteristic(UART_RX_CHAR);
+                await rxChar.startNotifications();
+
+                let bleTextBuffer = "";
+
+                rxChar.addEventListener('characteristicvaluechanged', (e) => {
+                    const rawBuffer = e.target.value.buffer;
+                    const view = new DataView(rawBuffer);
+
+                    // Text status messages (< 244 bytes)
+                    if (view.byteLength < 244) {
+                        const str = new TextDecoder().decode(rawBuffer);
+                        bleTextBuffer += str;
+                        let nlIdx;
+                        while ((nlIdx = bleTextBuffer.indexOf('\n')) !== -1) {
+                            let line = bleTextBuffer.substring(0, nlIdx).trim();
+                            bleTextBuffer = bleTextBuffer.substring(nlIdx+1);
+                            if(line) {
+                                parseTextStatus(line);
+                            }
+                        }
+                        return;
+                    }
+
+                    // Binary data packet (244 bytes)
+                    const seq = view.getUint8(0);
+                    if(lastSeq !== -1) {
+                        let expected = (lastSeq + 1) & 0xFF;
+                        const ind = document.getElementById('lossIndicator');
+                        if(seq !== expected) {
+                            ind.innerText = `Packet Loss! ${lastSeq}->${seq}`;
+                            ind.style.color = "var(--danger)";
+                        } else {
+                            ind.innerText = "Receiving";
+                            ind.style.color = "var(--success)";
+                        }
+                    }
+                    lastSeq = seq;
+
+                    const timeStamp = view.getUint32(1, false);
+                    let csvLine = `${seq},${timeStamp}`;
+
+                    // Microphone Data [5 -> 165]
+                    const mLen = view.getUint8(5);
+                    const mOffset = 6;
+                    csvLine += `,${mLen}`;
+                    let micRawArr = new Array(80).fill("");
+                    if (mLen > 0 && mLen <= 160) {
+                        for(let i=0; i<mLen; i+=2) {
+                            const sample = view.getInt16(mOffset+i, true);
+                            micRawArr[i/2] = sample;
+                        }
+                        micSampleCount += mLen / 2;
+                    }
+                    csvLine += `,${micRawArr.join(',')}`;
+
+                    // Thermal Data [166 -> 230]
+                    const fLenRaw = view.getUint8(166);
+                    let fLen = fLenRaw;
+                    if ((fLenRaw & 0x80) !== 0) {
+                        fLen = 64;
+                    }
+                    const fOffset = 167;
+                    csvLine += `,${fLenRaw}`;
+                    let thermalRawArr = new Array(32).fill("");
+                    if (fLen > 0 && fLen <= 64) {
+                        for(let i=0; i<fLen; i+=2) {
+                            const rawVal = view.getInt16(fOffset+i, false);
+                            thermalRawArr[i/2] = rawVal;
+                        }
+                        thermalRowCount++;
+                    }
+                    csvLine += `,${thermalRawArr.join(',')}`;
+
+                    // IMU Data [231 -> 243]
+                    const iLen = view.getUint8(231);
+                    const iOffset = 232;
+                    csvLine += `,${iLen}`;
+                    let imuRawArr = ["","","","","",""];
+                    if (iLen === 12) {
+                        const ax = view.getInt16(iOffset, true);
+                        const ay = view.getInt16(iOffset+2, true);
+                        const az = view.getInt16(iOffset+4, true);
+                        const gx = view.getInt16(iOffset+6, true);
+                        const gy = view.getInt16(iOffset+8, true);
+                        const gz = view.getInt16(iOffset+10, true);
+                        imuRawArr = [ax, ay, az, gx, gy, gz];
+                        imuSampleCount++;
+                    }
+                    csvLine += `,${imuRawArr.join(',')}`;
+
+                    // Store data
+                    window.rawDataLog.push(csvLine);
+                    packetCount++;
+                    document.getElementById('dataCount').innerText = window.rawDataLog.length - 1;
+                });
+
+                document.getElementById('btnConnect').innerText = "Disconnect";
+                document.getElementById('btnConnect').className = "btn btn-danger";
+                document.getElementById('stConn').innerText = "Connected";
+                document.getElementById('stConn').style.color = "var(--success)";
+                document.getElementById('btnStart').disabled = false;
+
+            } catch (err) {
+                console.error('Connection failed:', err);
+            }
+        });
+
+        async function sendCommand(cmdStr) {
+            if (!txChar) return;
+            await txChar.writeValue(new TextEncoder().encode(cmdStr + '\n'));
+        }
+
+        document.getElementById('btnStart').addEventListener('click', () => {
+            // Clear data cache before starting
+            let micHeaders = Array.from({length: 80}, (_,i) => `Mic_Raw_${i}`).join(',');
+            let thermalHeaders = Array.from({length: 32}, (_,i) => `Thermal_Raw_${i}`).join(',');
+            window.rawDataLog = [`Seq,Timestamp,Mic_Valid_Len,${micHeaders},Thermal_Valid_Len,${thermalHeaders},IMU_Valid_Len,IMU_Raw_Ax,IMU_Raw_Ay,IMU_Raw_Az,IMU_Raw_Gx,IMU_Raw_Gy,IMU_Raw_Gz`];
+            document.getElementById('dataCount').innerText = '0';
+            
+            // Reset rate counters
+            packetCount = 0;
+            micSampleCount = 0;
+            imuSampleCount = 0;
+            thermalRowCount = 0;
+            rateStartTime = Date.now();
+            
+            const mics = document.getElementById('swMic').checked ? 1 : 0;
+            const accs = document.getElementById('swAcc').checked ? 1 : 0;
+            const irs = document.getElementById('swIr').checked ? 1 : 0;
+            sendCommand(`START_REC:${mics},${accs},${irs}`);
+            document.getElementById('btnStart').disabled = true;
+            document.getElementById('btnStop').disabled = false;
+        });
+
+        document.getElementById('btnStop').addEventListener('click', () => {
+            sendCommand("S");
+            document.getElementById('btnStart').disabled = false;
+            document.getElementById('btnStop').disabled = true;
+            document.getElementById('lossIndicator').innerText = "Paused";
+            document.getElementById('lossIndicator').style.color = "var(--text-muted)";
+            
+            // Reset rate counters
+            packetCount = 0;
+            micSampleCount = 0;
+            imuSampleCount = 0;
+            thermalRowCount = 0;
+            rateStartTime = Date.now();
+        });
+
+        document.getElementById('btnSave').addEventListener('click', () => {
+            if (window.rawDataLog.length <= 1) {
+                return;
+            }
+
+            const baseFilename = document.getElementById('filename').value || 'sensor_data';
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+            const filename = `${baseFilename}_${timestamp}.csv`;
+
+            const chunkSize = 1000;
+            const chunks = ["\uFEFF"];
+
+            for (let i = 0; i < window.rawDataLog.length; i += chunkSize) {
+                const chunk = window.rawDataLog.slice(i, i + chunkSize);
+                chunks.push(chunk.join('\n'));
+                if (i + chunkSize < window.rawDataLog.length) {
+                    chunks.push('\n');
+                }
+            }
+
+            const blob = new Blob(chunks, { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement("a");
+            link.setAttribute("href", URL.createObjectURL(blob));
+            link.setAttribute("download", filename);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        });
+
+        // Update sampling rates periodically
+        setInterval(() => {
+            const now = Date.now();
+            const elapsedSec = (now - rateStartTime) / 1000;
+            
+            if (elapsedSec >= 1.0) {
+                const packetRate = (packetCount / elapsedSec).toFixed(1);
+                const micRate = (micSampleCount / elapsedSec).toFixed(0);
+                const imuRate = (imuSampleCount / elapsedSec).toFixed(0);
+                const thermalFrameRate = (thermalRowCount / elapsedSec / 24).toFixed(2);
+                
+                document.getElementById('packetRate').innerText = `${packetRate} Hz`;
+                document.getElementById('micRate').innerText = `${micRate} Hz`;
+                document.getElementById('imuRate').innerText = `${imuRate} Hz`;
+                document.getElementById('thermalRate').innerText = `${thermalFrameRate} Hz`;
+                
+                // Color code based on expected rates
+                const micEl = document.getElementById('micRate');
+                micEl.style.color = (micRate >= 15000) ? 'var(--success)' : (micRate >= 3000) ? '#fbbf24' : 'var(--danger)';
+                
+                const imuEl = document.getElementById('imuRate');
+                imuEl.style.color = (imuRate >= 180) ? 'var(--success)' : (imuRate >= 35) ? '#fbbf24' : 'var(--danger)';
+                
+                const thermalEl = document.getElementById('thermalRate');
+                thermalEl.style.color = (thermalFrameRate >= 7) ? 'var(--success)' : (thermalFrameRate >= 1.5) ? '#fbbf24' : 'var(--danger)';
+                
+                // Reset counters
+                packetCount = 0;
+                micSampleCount = 0;
+                imuSampleCount = 0;
+                thermalRowCount = 0;
+                rateStartTime = now;
+            }
+        }, 1000);
+    </script>
+</body>
+</html>
